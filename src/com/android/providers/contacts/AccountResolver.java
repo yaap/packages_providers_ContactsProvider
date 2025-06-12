@@ -22,10 +22,13 @@ import android.provider.ContactsContract.RawContacts;
 import android.provider.ContactsContract.RawContacts.DefaultAccount.DefaultAccountAndState;
 import android.provider.ContactsContract.SimAccount;
 import android.text.TextUtils;
+import android.util.Log;
 
 import java.util.List;
 
 public class AccountResolver {
+    public static final String UNABLE_TO_WRITE_TO_LOCAL_OR_SIM_EXCEPTION_MESSAGE =
+            "Cannot add contacts to local or SIM accounts when default account is set to cloud";
     private static final String TAG = "AccountResolver";
 
     private final ContactsDatabaseHelper mDbHelper;
@@ -63,11 +66,12 @@ public class AccountResolver {
      *                                                contacts.
      */
     public AccountWithDataSet resolveAccountWithDataSet(Uri uri, ContentValues values,
-            boolean applyDefaultAccount, boolean shouldValidateAccountForContactAddition) {
+            boolean applyDefaultAccount, boolean shouldValidateAccountForContactAddition,
+            boolean allowSimWriteOnCloudDcaBypassEnabled) {
         final Account[] accounts = resolveAccount(uri, values);
         final Account account = applyDefaultAccount
                 ? getAccountWithDefaultAccountApplied(accounts,
-                shouldValidateAccountForContactAddition)
+                shouldValidateAccountForContactAddition, allowSimWriteOnCloudDcaBypassEnabled)
                 : getFirstAccountOrNull(accounts);
 
         AccountWithDataSet accountWithDataSet = null;
@@ -94,7 +98,8 @@ public class AccountResolver {
      *                                  default account incompatible account types.
      */
     private Account getAccountWithDefaultAccountApplied(Account[] accounts,
-            boolean shouldValidateAccountForContactAddition)
+            boolean shouldValidateAccountForContactAddition,
+            boolean allowSimWriteOnCloudDcaBypassEnabled)
             throws IllegalArgumentException {
         if (accounts.length == 0) {
             DefaultAccountAndState defaultAccountAndState =
@@ -108,9 +113,9 @@ public class AccountResolver {
                 return defaultAccountAndState.getAccount();
             }
         } else {
-            if (shouldValidateAccountForContactAddition) {
-                validateAccountForContactAdditionInternal(accounts[0]);
-            }
+            validateAccountForContactAdditionInternal(accounts[0],
+                        shouldValidateAccountForContactAddition,
+                        allowSimWriteOnCloudDcaBypassEnabled);
             return accounts[0];
         }
     }
@@ -134,26 +139,46 @@ public class AccountResolver {
      *                                          (device or SIM) account.</li>
      *                                  </ul>
      */
-    public void validateAccountForContactAddition(String accountName, String accountType) {
-        if (TextUtils.isEmpty(accountName) ^ TextUtils.isEmpty(accountType)) {
-            throw new IllegalArgumentException(
-                    "Must specify both or neither of ACCOUNT_NAME and ACCOUNT_TYPE");
+    public void validateAccountForContactAddition(String accountName, String accountType,
+            boolean shouldValidateAccountForContactAddition,
+            boolean allowSimWriteOnCloudDcaBypassEnabled) {
+        if (shouldValidateAccountForContactAddition) {
+            if (TextUtils.isEmpty(accountName) ^ TextUtils.isEmpty(accountType)) {
+                throw new IllegalArgumentException(
+                        "Must specify both or neither of ACCOUNT_NAME and ACCOUNT_TYPE");
+            }
         }
+
         if (TextUtils.isEmpty(accountName)) {
-            validateAccountForContactAdditionInternal(/*account=*/null);
+            validateAccountForContactAdditionInternal(/*account=*/null,
+                    shouldValidateAccountForContactAddition,
+                    allowSimWriteOnCloudDcaBypassEnabled);
         } else {
-            validateAccountForContactAdditionInternal(new Account(accountName, accountType));
+            validateAccountForContactAdditionInternal(new Account(accountName, accountType),
+                    shouldValidateAccountForContactAddition,
+                    allowSimWriteOnCloudDcaBypassEnabled);
         }
     }
 
-    private void validateAccountForContactAdditionInternal(Account account)
+    private void validateAccountForContactAdditionInternal(Account account,
+            boolean enforceCloudDefaultAccountRestriction,
+            boolean allowSimWriteOnCloudDcaBypassEnabled)
             throws IllegalArgumentException {
         DefaultAccountAndState defaultAccount = mDefaultAccountManager.pullDefaultAccount();
 
         if (defaultAccount.getState() == DefaultAccountAndState.DEFAULT_ACCOUNT_STATE_CLOUD) {
-            if (isDeviceOrSimAccount(account)) {
-                throw new IllegalArgumentException("Cannot add contacts to local or SIM accounts "
-                        + "when default account is set to cloud");
+            if (allowSimWriteOnCloudDcaBypassEnabled
+                    ? isDeviceAccount(account)
+                    : isDeviceOrSimAccount(account)) {
+                if (enforceCloudDefaultAccountRestriction) {
+                    throw new IllegalArgumentException(
+                            UNABLE_TO_WRITE_TO_LOCAL_OR_SIM_EXCEPTION_MESSAGE);
+                } else {
+                    Log.w(TAG,
+                            "Cloud default account: Local/SIM contact creation allowed (target "
+                                    + "SDK <36), but restricted in target SDK 36+. Avoid "
+                                    + "local/SIM writes in target SDK 36+.");
+                }
             }
         }
     }
@@ -176,6 +201,14 @@ public class AccountResolver {
 
         List<SimAccount> simAccounts = mDbHelper.getAllSimAccounts();
         return accountWithDataSet.isLocalAccount() || accountWithDataSet.inSimAccounts(simAccounts);
+    }
+
+    private boolean isDeviceAccount(Account account) {
+        AccountWithDataSet accountWithDataSet = account == null
+                ? new AccountWithDataSet(null, null, null)
+                : new AccountWithDataSet(account.name, account.type, null);
+
+        return accountWithDataSet.isLocalAccount();
     }
 
     /**

@@ -37,3 +37,27 @@ flag {
     description: "Delete data rows not included in CommonDataKinds when moving between account types"
     bug: "330324156"
 }
+flag {
+    name: "disable_cp2_account_move_flag"
+    namespace: "contacts"
+    description: "Disable bulk move of contacts between accounts"
+    bug: "382359013"
+}
+flag {
+   name: "log_contact_save_invalid_account_error"
+   namespace: "contacts"
+   description: "Log the error of saving contacts to invalid account"
+   bug: "399412962"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+flag {
+   name: "log_call_method"
+   namespace: "contacts"
+   description: "Log the call method"
+   bug: "400528898"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}

@@ -17,7 +17,7 @@
 <resources xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
     <string name="sharedUserLabel" msgid="8024311725474286801">"Android Core Apps"</string>
-    <string name="app_label" msgid="3389954322874982620">"Пам\'ять контактів"</string>
+    <string name="app_label" msgid="3389954322874982620">"Сховище контактів"</string>
     <string name="provider_label" msgid="6012150850819899907">"Контакти"</string>
     <string name="upgrade_out_of_memory_notification_ticker" msgid="7638747231223520477">"Оновлення контактів потребує більше пам’яті."</string>
     <string name="upgrade_out_of_memory_notification_title" msgid="8888171924684998531">"Оновлення пам’яті для контактів"</string>
@@ -26,8 +26,8 @@
     <string name="local_invisible_directory" msgid="705244318477396120">"Інші"</string>
     <string name="voicemail_from_column" msgid="435732568832121444">"Голосова пошта від "</string>
     <string name="move_contacts_to_default_account_dialog_title" msgid="1691634911830971868">"Синхронізувати наявні контакти?"</string>
-    <string name="move_contacts_to_default_account_dialog_message" msgid="2005758519299826267">"Ви можете синхронізувати %1$s для автоматичного резервного копіювання в %2$s (%3$s)"</string>
-    <string name="movable_contacts_count" msgid="7367420913436438253">"{contacts_count,plural, =1{# наявний контакт}one{# наявний контакт}few{# наявні контакти}many{# наявних контактів}other{наявні контакти (#)}}"</string>
+    <string name="move_contacts_to_default_account_dialog_message" msgid="8979541503037221359">"Ви можете синхронізувати %1$s резервне копіювання в %2$s (%3$s)"</string>
+    <string name="movable_contacts_count" msgid="5238731486523789939">"{contacts_count,plural, =1{# наявний контакт, щоб забезпечити його}one{# наявний контакт, щоб забезпечити їх}few{# наявні контакти, щоб забезпечити їх}many{# наявних контактів, щоб забезпечити їх}other{# наявного контакта, щоб забезпечити їх}}"</string>
     <string name="move_contacts_to_default_account_dialog_sync_button_text" msgid="6214724007562800237">"Синхронізувати"</string>
     <string name="move_contacts_to_default_account_dialog_cancel_button_text" msgid="1022518096709643659">"Не синхронізувати"</string>
     <string name="debug_dump_title" msgid="4916885724165570279">"Копіювати базу даних контактів"</string>

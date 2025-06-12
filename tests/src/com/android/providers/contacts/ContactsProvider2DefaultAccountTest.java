@@ -20,9 +20,11 @@ import static android.provider.ContactsContract.SimAccount.SDN_EF_TYPE;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assume.assumeTrue;
 
 import android.accounts.Account;
 import android.compat.testing.PlatformCompatChangeRule;
+import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.ContentValues;
 import android.database.sqlite.SQLiteDatabase;
@@ -153,28 +155,36 @@ public class ContactsProvider2DefaultAccountTest extends BaseContactsProvider2Te
         // Default account is Unknown initially.
         assertEquals(0, mCp.getDatabaseHelper().getDefaultAccountIfAny().length);
 
-        assertNull(mResolver.call(ContactsContract.AUTHORITY_URI,
-                DefaultAccount.QUERY_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null, null));
+        assertThrows(UnsupportedOperationException.class, () -> {
+            mResolver.call(ContactsContract.AUTHORITY_URI,
+                    DefaultAccount.QUERY_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null, null);
+        });
 
         // Attempt to set default account to a cloud account.
-        assertNull(mResolver.call(ContactsContract.AUTHORITY_URI,
-                DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null,
-                bundleToSetDefaultAccountForNewContacts(
-                        DefaultAccountAndState.ofCloud(NON_SYSTEM_CLOUD_ACCOUNT_1))));
+        assertThrows(UnsupportedOperationException.class, () -> {
+            mResolver.call(ContactsContract.AUTHORITY_URI,
+                    DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null,
+                    bundleToSetDefaultAccountForNewContacts(
+                            DefaultAccountAndState.ofCloud(NON_SYSTEM_CLOUD_ACCOUNT_1)));
+        });
         // Default account is not changed.
         assertEquals(0, mCp.getDatabaseHelper().getDefaultAccountIfAny().length);
 
         // Attempt to set default account to local.
-        assertNull(mResolver.call(ContactsContract.AUTHORITY_URI,
-                DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null,
-                bundleToSetDefaultAccountForNewContacts(DefaultAccountAndState.ofLocal())));
+        assertThrows(UnsupportedOperationException.class, () -> {
+            mResolver.call(ContactsContract.AUTHORITY_URI,
+                    DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null,
+                    bundleToSetDefaultAccountForNewContacts(DefaultAccountAndState.ofLocal()));
+        });
         // Default account is not changed.
         assertEquals(0, mCp.getDatabaseHelper().getDefaultAccountIfAny().length);
 
         // Attempt to set default account to "not set".
-        assertNull(mResolver.call(ContactsContract.AUTHORITY_URI,
-                DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null,
-                bundleToSetDefaultAccountForNewContacts(DefaultAccountAndState.ofNotSet())));
+        assertThrows(UnsupportedOperationException.class, () -> {
+            mResolver.call(ContactsContract.AUTHORITY_URI,
+                    DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null,
+                    bundleToSetDefaultAccountForNewContacts(DefaultAccountAndState.ofNotSet()));
+        });
         // Default account is not changed.
         assertEquals(0, mCp.getDatabaseHelper().getDefaultAccountIfAny().length);
     }
@@ -385,14 +395,18 @@ public class ContactsProvider2DefaultAccountTest extends BaseContactsProvider2Te
     @RequiresFlagsDisabled(Flags.FLAG_NEW_DEFAULT_ACCOUNT_API_ENABLED)
     public void testGetEligibleCloudAccounts_flagOff() throws Exception {
         mActor.setAccounts(new Account[0]);
-        assertNull(mResolver.call(ContactsContract.AUTHORITY_URI,
-                        DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD,
-                        null, null));
+        assertThrows(UnsupportedOperationException.class, () -> {
+            mResolver.call(ContactsContract.AUTHORITY_URI,
+                    DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD,
+                    null, null);
+        });
 
         mActor.setAccounts(new Account[]{SYSTEM_CLOUD_ACCOUNT_1});
-        assertNull(mResolver.call(ContactsContract.AUTHORITY_URI,
-                        DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD,
-                        null, null));
+        assertThrows(UnsupportedOperationException.class, () -> {
+            mResolver.call(ContactsContract.AUTHORITY_URI,
+                    DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD,
+                    null, null);
+        });
     }
 
     @Test
@@ -419,6 +433,14 @@ public class ContactsProvider2DefaultAccountTest extends BaseContactsProvider2Te
 
         // 1 system cloud account is present on the device.
         mActor.setAccounts(new Account[]{SYSTEM_CLOUD_ACCOUNT_1});
+
+        // The setIsSyncable operation may not be effective on some environments. Skip the remaining
+        // tests if setIsSyncable is not effective.
+        ContentResolver.setIsSyncable(SYSTEM_CLOUD_ACCOUNT_1, ContactsContract.AUTHORITY, 1);
+        Thread.sleep(1000);
+        assumeTrue(ContentResolver.getIsSyncable(SYSTEM_CLOUD_ACCOUNT_1, ContactsContract.AUTHORITY)
+                > 0);
+
         response = mResolver.call(ContactsContract.AUTHORITY_URI,
                 DefaultAccount.QUERY_ELIGIBLE_DEFAULT_ACCOUNTS_METHOD, null, null);
         accounts = response.getParcelableArrayList(
@@ -427,6 +449,14 @@ public class ContactsProvider2DefaultAccountTest extends BaseContactsProvider2Te
 
         // 2 system cloud accounts are present on the device.
         mActor.setAccounts(new Account[]{SYSTEM_CLOUD_ACCOUNT_1, SYSTEM_CLOUD_ACCOUNT_2});
+
+        // The setIsSyncable operation may not be effective on some environments. Skip the remaining
+        // tests if setIsSyncable is not effective.
+        ContentResolver.setIsSyncable(SYSTEM_CLOUD_ACCOUNT_2, ContactsContract.AUTHORITY, 1);
+        Thread.sleep(1000);
+        assumeTrue(ContentResolver.getIsSyncable(SYSTEM_CLOUD_ACCOUNT_2, ContactsContract.AUTHORITY)
+                > 0);
+
         response = mResolver.call(ContactsContract.AUTHORITY_URI,
                 DefaultAccount.QUERY_ELIGIBLE_DEFAULT_ACCOUNTS_METHOD, null, null);
         accounts = response.getParcelableArrayList(
@@ -506,6 +536,8 @@ public class ContactsProvider2DefaultAccountTest extends BaseContactsProvider2Te
         assertThrows(IllegalArgumentException.class, () ->
                 insertRawContact((Account) null));
 
+        assertThrows(IllegalArgumentException.class, () -> insertRawContact(SIM_ACCOUNT_1));
+
         // Okay to update the raw contact to a different cloud account
         assertEquals(1, updateRawContactAccount(rawContactId1, SYSTEM_CLOUD_ACCOUNT_2));
 
@@ -520,12 +552,73 @@ public class ContactsProvider2DefaultAccountTest extends BaseContactsProvider2Te
         assertThrows(IllegalArgumentException.class, () ->
                 insertGroup((Account) null));
 
+        // Exception expected when inserting group in SIM account.
+        assertThrows(IllegalArgumentException.class, () -> insertGroup(SIM_ACCOUNT_1));
+
         // Okay to update the group to a different cloud account
         assertEquals(1, updateGroupAccount(groupId1, SYSTEM_CLOUD_ACCOUNT_2));
 
         // Exception expected when updating group to NULL account.
         assertThrows(IllegalArgumentException.class, () -> updateGroupAccount(groupId1, null));
 
+        // Exception expected when updating group to SIM account.
+        assertThrows(IllegalArgumentException.class,
+                () -> updateGroupAccount(groupId1, SIM_ACCOUNT_1));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NEW_DEFAULT_ACCOUNT_API_ENABLED)
+    @EnableCompatChanges({ChangeIds.RESTRICT_CONTACTS_CREATION_IN_ACCOUNTS})
+    public void
+            testRawContactInsert_whenDefaultAccountSetToCloud_withManageSimAccountsPermission() {
+        mActor.addPermissions("android.permission.SET_DEFAULT_ACCOUNT_FOR_CONTACTS");
+        mActor.addPermissions("android.contacts.permission.MANAGE_SIM_ACCOUNTS");
+        mActor.setAccounts(new Account[]{SYSTEM_CLOUD_ACCOUNT_1, SYSTEM_CLOUD_ACCOUNT_2});
+
+        // Set the default account (for new contacts) to a cloud account.
+        mResolver.call(ContactsContract.AUTHORITY_URI,
+                DefaultAccount.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS_METHOD, null,
+                bundleToSetDefaultAccountForNewContacts(
+                        DefaultAccountAndState.ofCloud(SYSTEM_CLOUD_ACCOUNT_1)));
+
+        // Okay to insert raw contact in cloud account.
+        long rawContactId1 = insertRawContact(SYSTEM_CLOUD_ACCOUNT_1);
+
+        // Exception expected when inserting raw contact in NULL account.
+        assertThrows(IllegalArgumentException.class, () ->
+                insertRawContact((Account) null));
+
+        // No exception expected when inserting raw contact in SIM account by MANAGE_SIM_ACCOUNTS
+        // permission holder.
+        insertRawContact(SIM_ACCOUNT_1);
+
+        // Okay to update the raw contact to a different cloud account
+        assertEquals(1, updateRawContactAccount(rawContactId1, SYSTEM_CLOUD_ACCOUNT_2));
+
+        // Exception expected when updating raw contact to NULL account.
+        assertThrows(IllegalArgumentException.class,
+                () -> updateRawContactAccount(rawContactId1, null));
+
+        // Okay to insert group in cloud account.
+        long groupId1 = insertGroup(SYSTEM_CLOUD_ACCOUNT_1);
+
+        // Exception expected when inserting group in NULL account.
+        assertThrows(IllegalArgumentException.class, () ->
+                insertGroup((Account) null));
+
+        // No exception expected when inserting group in SIM account by MANAGE_SIM_ACCOUNTS
+        // permission holder.
+        insertGroup(SIM_ACCOUNT_1);
+
+        // Okay to update the group to a different cloud account
+        assertEquals(1, updateGroupAccount(groupId1, SYSTEM_CLOUD_ACCOUNT_2));
+
+        // Exception expected when updating group to NULL account.
+        assertThrows(IllegalArgumentException.class, () -> updateGroupAccount(groupId1, null));
+
+        // No exception expected when updating group to SIM account by MANAGE_SIM_ACCOUNTS
+        // permission holder.
+        assertEquals(1, updateGroupAccount(groupId1, SIM_ACCOUNT_1));
     }
 
     private long insertRawContact(Account account) {

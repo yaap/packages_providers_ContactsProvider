@@ -16,9 +16,14 @@
 
 package com.android.providers.contacts.util;
 
+import static com.android.providers.contacts.flags.Flags.logCallMethod;
+import static com.android.providers.contacts.flags.Flags.logContactSaveInvalidAccountError;
+
 import android.os.SystemClock;
 import android.util.StatsEvent;
 import android.util.StatsLog;
+
+import com.android.providers.contacts.AccountResolver;
 
 public class LogUtils {
     // Keep in sync with ContactsProviderStatus#ResultType in
@@ -28,6 +33,7 @@ public class LogUtils {
         int FAIL = 2;
         int ILLEGAL_ARGUMENT = 3;
         int UNSUPPORTED_OPERATION = 4;
+        int INVALID_ACCOUNT = 5;
     }
 
     // Keep in sync with ContactsProviderStatus#ApiType in
@@ -45,6 +51,20 @@ public class LogUtils {
     // frameworks/proto_logging/stats/atoms.proto file.
     public interface TaskType {
         int DANGLING_CONTACTS_CLEANUP_TASK = 1;
+    }
+
+    // Keep in sync with ContactsProviderStatus#MethodCall in
+    // frameworks/proto_logging/stats/atoms.proto file.
+    public interface MethodCall {
+        int UNKNOWN_METHOD = 0;
+        int ADD_SIM_ACCOUNTS = 1;
+        int REMOVE_SIM_ACCOUNTS = 2;
+        int GET_SIM_ACCOUNTS = 3;
+        int SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS = 4;
+        int GET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS = 5;
+        int MOVE_LOCAL_CONTACTS_TO_DEFAULT_ACCOUNT = 6;
+        int MOVE_SIM_CONTACTS_TO_DEFAULT_ACCOUNT = 7;
+        int GET_ELIGIBLE_CLOUD_ACCOUNTS = 8;
     }
 
     // Keep in sync with ContactsProviderStatus#CallerType in
@@ -68,7 +88,7 @@ public class LogUtils {
                 .writeInt(logFields.getResultCount())
                 .writeLong(getLatencyMicros(logFields.getStartNanos()))
                 .writeInt(logFields.getTaskType())
-                .writeInt(0) // Not used yet.
+                .writeInt(logCallMethod() ? logFields.getMethodCalled() : 0)
                 .writeInt(logFields.getUid())
                 .usePooledBuffer()
                 .build());
@@ -79,10 +99,16 @@ public class LogUtils {
                 ? CallerType.CALLER_IS_SYNC_ADAPTER : CallerType.CALLER_IS_NOT_SYNC_ADAPTER;
     }
 
+
     private static int getResultType(Exception exception) {
         if (exception == null) {
             return ResultType.SUCCESS;
         } else if (exception instanceof IllegalArgumentException) {
+            if (logContactSaveInvalidAccountError()
+                    && AccountResolver.UNABLE_TO_WRITE_TO_LOCAL_OR_SIM_EXCEPTION_MESSAGE.equals(
+                    exception.getMessage())) {
+                return ResultType.INVALID_ACCOUNT;
+            }
             return ResultType.ILLEGAL_ARGUMENT;
         } else if (exception instanceof UnsupportedOperationException) {
             return ResultType.UNSUPPORTED_OPERATION;
