@@ -297,13 +297,11 @@ public class AccountAttributesManager {
         }
 
         // Check for semantic conflicts in the new state:
-        // Check DATA_ORIGIN category: ensure at most one bit is set.
-        // TODO(b/432284382): do we want to also enforce at least one bits is set?
+        // Check DATA_ORIGIN category: ensure exactly one bit is set.
         final long dataOriginBits = attributes & dataOriginMask;
-        if ((dataOriginBits & (dataOriginBits - 1)) != 0) {
+        if (Long.bitCount(dataOriginBits) != 1) {
             throw new IllegalStateException(
-                    "Conflict: The resulting attributes would contain more than one DATA_ORIGIN"
-                            + " type.");
+                    "The resulting attributes must contain exactly one DATA_ORIGIN type.");
         }
 
         setAccountAttributesWithOverride(accountWithDataSet, attributes);

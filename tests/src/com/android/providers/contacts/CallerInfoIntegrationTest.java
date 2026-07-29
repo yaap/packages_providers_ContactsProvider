@@ -16,15 +16,24 @@
 
 package com.android.providers.contacts;
 
+import static org.junit.Assume.assumeTrue;
+
 import android.content.ContentUris;
 import android.content.ContentValues;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.provider.ContactsContract.RawContacts;
 
 import androidx.test.filters.MediumTest;
+import androidx.test.runner.AndroidJUnit4;
 
 import com.android.providers.contacts.testutil.DataUtil;
 import com.android.server.telecom.util.CallerInfo;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * Integration test for {@link CallerInfo} and {@link ContactsProvider2}.
@@ -36,9 +45,27 @@ import com.android.server.telecom.util.CallerInfo;
  * </code>
  */
 @MediumTest
+@RunWith(AndroidJUnit4.class)
 public class CallerInfoIntegrationTest extends BaseContactsProvider2Test {
+    private PackageManager mPackageManager;
 
+    @Before
+    @Override
+    public void setUp() throws Exception {
+        super.setUp();
+        mPackageManager = mContext.getPackageManager();
+    }
+
+    @After
+    @Override
+    public void tearDown() throws Exception {
+        super.tearDown();
+    }
+
+    @Test
     public void testCallerInfo() {
+        assumeTrue("Skipping test: Device does not have FEATURE_TELEPHONY_CALLING.",
+                mPackageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_CALLING));
         ContentValues values = new ContentValues();
         values.put(RawContacts.CUSTOM_RINGTONE, "ring");
         values.put(RawContacts.SEND_TO_VOICEMAIL, 1);

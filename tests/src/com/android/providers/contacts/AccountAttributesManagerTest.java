@@ -217,6 +217,18 @@ public class AccountAttributesManagerTest extends BaseContactsProvider2Test {
     }
 
     @Test
+    public void testUpdateAccountAttributes_withNoOriginBit_throwsException() {
+        // Arrange: Create attributes with no DATA_ORIGIN bits set, which is invalid.
+        long noOriginAttributes = ATTRIBUTE_SYNC_MODE_DOWN_SYNC;
+
+        // Act & Assert
+        assertThrows(IllegalStateException.class, () -> {
+            mManager.updateAccountAttributes(SYSTEM_ACCOUNT_WITH_DATA_SET, noOriginAttributes,
+                    new Account[]{SYSTEM_ACCOUNT});
+        });
+    }
+
+    @Test
     public void testUpdateAccountAttributes_forInvalidAccount_throwsException() {
         // Act & Assert
         assertThrows(IllegalArgumentException.class, () -> {

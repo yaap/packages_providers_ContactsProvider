@@ -32,13 +32,13 @@ import android.database.sqlite.SQLiteQueryBuilder;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Process;
-import android.os.UserHandle;
 import android.provider.CallLog;
 import android.telecom.TelecomManager;
 import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.internal.telephony.TelephonyPermissions;
+import com.android.providers.contacts.util.PccAwareUidComparator;
 import com.android.providers.contacts.util.SelectionBuilder;
 
 import java.util.Objects;
@@ -174,7 +174,7 @@ public class CallComposerLocationProvider extends ContentProvider {
     private void enforceAccessRestrictions() {
         int uid = Binder.getCallingUid();
         if (TelephonyPermissions.isSystemOrPhone(uid)
-                || UserHandle.isSameApp(uid, Process.myUid())) {
+                || PccAwareUidComparator.isSameApp(getContext(), uid, Process.myUid())) {
             return;
         }
         String defaultDialerPackageName = getContext().getSystemService(TelecomManager.class)

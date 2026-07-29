@@ -29,6 +29,8 @@
     <uses-permission android:name="android.permission.LOG_COMPAT_CHANGE" />
     <!-- Permissions required for setting default account  -->
     <uses-permission android:name="android.permission.SET_DEFAULT_ACCOUNT_FOR_CONTACTS" />
+    <!-- Permissions required for persisting jobs across reboots -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
 
     <permission
@@ -67,6 +69,13 @@
                     android:pathPattern="/contacts/.*/photo"
                     android:readPermission="android.permission.GLOBAL_SEARCH" />
             <grant-uri-permission android:pathPattern=".*" />
+        </provider>
+
+        <provider android:name=".people.PeopleProvider"
+            android:authorities="people;com.android.people"
+            android:multiprocess="false"
+            android:exported="true"
+            android:featureFlag="com.android.providers.contacts.flags.enable_people_provider">
         </provider>
 
         <provider android:name="CallLogProvider"
@@ -108,6 +117,16 @@
             android:authorities="com.android.voicemail"
             android:syncable="false" android:multiprocess="false"
             android:exported="true">
+        </provider>
+
+        <provider android:name="com.android.providers.contacts.picker.ContactsPickerSessionProvider"
+            android:authorities="com.android.contacts.picker.sessions"
+            android:readPermission="android.permission.MANAGE_CONTACTS_PICKER_SESSION"
+            android:writePermission="android.permission.MANAGE_CONTACTS_PICKER_SESSION"
+            android:grantUriPermissions="true"
+            android:featureFlag="android.content.flags.enable_system_contacts_picker"
+            android:exported="true"
+            android:visibleToInstantApps="true">
         </provider>
 
         <!-- Handles database upgrades after OTAs, then disables itself -->
@@ -154,6 +173,11 @@
         <provider android:name=".debug.DumpFileProvider"
                   android:authorities="com.android.contacts.dumpfile"
                   android:exported="true"/>
+
+        <service
+            android:name=".picker.ContactsPickerJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false" />
 
     </application>
 </manifest>

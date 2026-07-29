@@ -15,8 +15,9 @@
  */
 package com.android.providers.contacts.util;
 
+import static android.Manifest.permission.MANAGE_CONTACTS_PICKER_SESSION;
+
 import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Binder;
@@ -96,5 +97,13 @@ public class ContactsPermissions {
                     + " ok=" + ok);
         }
         return ok;
+    }
+
+    /** Enforce the caller to be the contacts system picker */
+    public static void enforceSystemContactsPickerPermission(Context context) {
+        if (!android.content.flags.Flags.enableSystemContactsPicker()) {
+            throw new UnsupportedOperationException("Uri not supported");
+        }
+        enforceCallingOrSelfPermission(context, MANAGE_CONTACTS_PICKER_SESSION);
     }
 }

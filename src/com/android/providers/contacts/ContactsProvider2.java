@@ -17,13 +17,15 @@ package com.android.providers.contacts;
 
 import static android.Manifest.permission.INTERACT_ACROSS_USERS;
 import static android.Manifest.permission.INTERACT_ACROSS_USERS_FULL;
+import static android.Manifest.permission.READ_CALL_LOG;
+import static android.Manifest.permission.WRITE_CONTACTS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
-import static android.provider.Flags.newDefaultAccountApiEnabled;
 import static android.provider.Flags.newAccountAttributesApiEnabled;
 
 import static com.android.providers.contacts.flags.Flags.cp2SyncSearchIndexFlag;
+import static com.android.providers.contacts.flags.Flags.directoryProviderQueryPermissionCheck;
 import static com.android.providers.contacts.flags.Flags.disableCp2AccountMoveFlag;
-import static com.android.providers.contacts.flags.Flags.insertAccountLogging;
+import static com.android.providers.contacts.flags.Flags.enforceStrictSqlChecks;
 import static com.android.providers.contacts.flags.Flags.logCallMethod;
 import static com.android.providers.contacts.flags.Flags.restrictPiiDataUriColumns;
 import static com.android.providers.contacts.util.PhoneAccountHandleMigrationUtils.TELEPHONY_COMPONENT_NAME;
@@ -71,6 +73,7 @@ import android.database.MatrixCursor.RowBuilder;
 import android.database.MergeCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteDoneException;
+import android.database.sqlite.SQLiteException;
 import android.database.sqlite.SQLiteQueryBuilder;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -85,6 +88,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.ParcelFileDescriptor.AutoCloseInputStream;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.StrictMode;
 import android.os.SystemClock;
@@ -193,15 +197,20 @@ import com.android.providers.contacts.database.DeletedContactsTableUtil;
 import com.android.providers.contacts.database.MoreDatabaseUtils;
 import com.android.providers.contacts.enterprise.EnterpriseContactsCursorWrapper;
 import com.android.providers.contacts.enterprise.EnterprisePolicyGuard;
+import com.android.providers.contacts.picker.ContactsPickerSessionProvider;
 import com.android.providers.contacts.util.Clock;
 import com.android.providers.contacts.util.ContactsPermissions;
 import com.android.providers.contacts.util.DbQueryUtils;
 import com.android.providers.contacts.util.LogFields;
 import com.android.providers.contacts.util.LogUtils;
 import com.android.providers.contacts.util.NeededForTesting;
+import com.android.providers.contacts.util.PccAwareUidComparator;
+import com.android.providers.contacts.util.PccUtils;
 import com.android.providers.contacts.util.UserUtils;
 import com.android.vcard.VCardComposer;
 import com.android.vcard.VCardConfig;
+
+import libcore.io.IoUtils;
 
 import com.google.android.collect.Lists;
 import com.google.android.collect.Maps;
@@ -209,8 +218,6 @@ import com.google.android.collect.Sets;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.primitives.Ints;
-
-import libcore.io.IoUtils;
 
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
@@ -372,6 +379,8 @@ public class ContactsProvider2 extends AbstractContactsProvider
     public static final int CONTACTS_ID_DISPLAY_PHOTO_CORP = 1028;
     public static final int CONTACTS_FILTER_ENTERPRISE = 1029;
     public static final int CONTACTS_ENTERPRISE = 1030;
+    private static final int CONTACTS_MIMES = 1031;
+    private static final int CONTACTS_MIMES_FILTER = 1032;
 
     public static final int RAW_CONTACTS = 2002;
     public static final int RAW_CONTACTS_ID = 2003;
@@ -563,6 +572,28 @@ public class ContactsProvider2 extends AbstractContactsProvider
         int ACCOUNT_TYPE = 2;
         int ACCOUNT_NAME = 3;
         int DATA_SET = 4;
+    }
+
+    interface PccUidChecker {
+        boolean isPrivateComputeCoreUid(int uid);
+    }
+
+    private PccUidChecker mPccUidChecker = Process::isPrivateComputeCoreUid;
+
+    /**
+     * Sets a test-only {@link PccUidChecker} to mock the behavior of {@link
+     * android.os.Process#isPrivateComputeCoreUid(int)}.
+     *
+     * <p>This method is required because {@link android.os.Process#isPrivateComputeCoreUid(int)} is
+     * a static method, which cannot be directly mocked using standard Mockito. By injecting a mock
+     * {@link PccUidChecker}, tests can simulate scenarios where the calling UID is or is not a
+     * Private Compute Core UID, allowing for thorough testing of PCC-related validation logic.
+     *
+     * @param checker The {@link PccUidChecker} instance to use.
+     */
+    @VisibleForTesting
+    void setPccUidCheckerForTest(PccUidChecker checker) {
+        mPccUidChecker = checker;
     }
 
     private static final String DEFAULT_ACCOUNT_TYPE = "com.google";
@@ -982,38 +1013,56 @@ public class ContactsProvider2 extends AbstractContactsProvider
             .build();
 
     /** Contains the data and contacts columns, for joined tables */
-    private static final ProjectionMap sPhoneLookupProjectionMap = ProjectionMap.builder()
-            .add(PhoneLookup._ID, "contacts_view." + Contacts._ID)
-            .add(PhoneLookup.CONTACT_ID, "contacts_view." + Contacts._ID)
-            .add(PhoneLookup.DATA_ID, PhoneLookup.DATA_ID)
-            .add(PhoneLookup.LOOKUP_KEY, "contacts_view." + Contacts.LOOKUP_KEY)
-            .add(PhoneLookup.DISPLAY_NAME_SOURCE, "contacts_view." + Contacts.DISPLAY_NAME_SOURCE)
-            .add(PhoneLookup.DISPLAY_NAME, "contacts_view." + Contacts.DISPLAY_NAME)
-            .add(PhoneLookup.DISPLAY_NAME_ALTERNATIVE,
-                    "contacts_view." + Contacts.DISPLAY_NAME_ALTERNATIVE)
-            .add(PhoneLookup.PHONETIC_NAME, "contacts_view." + Contacts.PHONETIC_NAME)
-            .add(PhoneLookup.PHONETIC_NAME_STYLE, "contacts_view." + Contacts.PHONETIC_NAME_STYLE)
-            .add(PhoneLookup.SORT_KEY_PRIMARY, "contacts_view." + Contacts.SORT_KEY_PRIMARY)
-            .add(PhoneLookup.SORT_KEY_ALTERNATIVE, "contacts_view." + Contacts.SORT_KEY_ALTERNATIVE)
-            .add(PhoneLookup.LR_LAST_TIME_CONTACTED, "contacts_view." + Contacts.LR_LAST_TIME_CONTACTED)
-            .add(PhoneLookup.LR_TIMES_CONTACTED, "contacts_view." + Contacts.LR_TIMES_CONTACTED)
-            .add(PhoneLookup.STARRED, "contacts_view." + Contacts.STARRED)
-            .add(PhoneLookup.IN_DEFAULT_DIRECTORY, "contacts_view." + Contacts.IN_DEFAULT_DIRECTORY)
-            .add(PhoneLookup.IN_VISIBLE_GROUP, "contacts_view." + Contacts.IN_VISIBLE_GROUP)
-            .add(PhoneLookup.PHOTO_ID, "contacts_view." + Contacts.PHOTO_ID)
-            .add(PhoneLookup.PHOTO_FILE_ID, "contacts_view." + Contacts.PHOTO_FILE_ID)
-            .add(PhoneLookup.PHOTO_URI, "contacts_view." + Contacts.PHOTO_URI)
-            .add(PhoneLookup.PHOTO_THUMBNAIL_URI, "contacts_view." + Contacts.PHOTO_THUMBNAIL_URI)
-            .add(PhoneLookup.CUSTOM_RINGTONE, "contacts_view." + Contacts.CUSTOM_RINGTONE)
-            .add(PhoneLookup.HAS_PHONE_NUMBER, "contacts_view." + Contacts.HAS_PHONE_NUMBER)
-            .add(PhoneLookup.SEND_TO_VOICEMAIL, "contacts_view." + Contacts.SEND_TO_VOICEMAIL)
-            .add(PhoneLookup.NUMBER, Phone.NUMBER)
-            .add(PhoneLookup.TYPE, Phone.TYPE)
-            .add(PhoneLookup.LABEL, Phone.LABEL)
-            .add(PhoneLookup.NORMALIZED_NUMBER, Phone.NORMALIZED_NUMBER)
-            .add(Data.PREFERRED_PHONE_ACCOUNT_COMPONENT_NAME)
-            .add(Data.PREFERRED_PHONE_ACCOUNT_ID)
-            .build();
+    private static final ProjectionMap sPhoneLookupProjectionMap =
+            ProjectionMap.builder()
+                    .add(PhoneLookup._ID, "contacts_view." + Contacts._ID)
+                    .add(PhoneLookup.CONTACT_ID, "contacts_view." + Contacts._ID)
+                    .add(PhoneLookup.DATA_ID, PhoneLookup.DATA_ID)
+                    .add(PhoneLookup.LOOKUP_KEY, "contacts_view." + Contacts.LOOKUP_KEY)
+                    .add(
+                            PhoneLookup.DISPLAY_NAME_SOURCE,
+                            "contacts_view." + Contacts.DISPLAY_NAME_SOURCE)
+                    .add(PhoneLookup.DISPLAY_NAME, "contacts_view." + Contacts.DISPLAY_NAME)
+                    .add(
+                            PhoneLookup.DISPLAY_NAME_ALTERNATIVE,
+                            "contacts_view." + Contacts.DISPLAY_NAME_ALTERNATIVE)
+                    .add(PhoneLookup.PHONETIC_NAME, "contacts_view." + Contacts.PHONETIC_NAME)
+                    .add(
+                            PhoneLookup.PHONETIC_NAME_STYLE,
+                            "contacts_view." + Contacts.PHONETIC_NAME_STYLE)
+                    .add(PhoneLookup.SORT_KEY_PRIMARY, "contacts_view." + Contacts.SORT_KEY_PRIMARY)
+                    .add(
+                            PhoneLookup.SORT_KEY_ALTERNATIVE,
+                            "contacts_view." + Contacts.SORT_KEY_ALTERNATIVE)
+                    .add(
+                            PhoneLookup.LR_LAST_TIME_CONTACTED,
+                            "contacts_view." + Contacts.LR_LAST_TIME_CONTACTED)
+                    .add(
+                            PhoneLookup.LR_TIMES_CONTACTED,
+                            "contacts_view." + Contacts.LR_TIMES_CONTACTED)
+                    .add(PhoneLookup.STARRED, "contacts_view." + Contacts.STARRED)
+                    .add(
+                            PhoneLookup.IN_DEFAULT_DIRECTORY,
+                            "contacts_view." + Contacts.IN_DEFAULT_DIRECTORY)
+                    .add(PhoneLookup.IN_VISIBLE_GROUP, "contacts_view." + Contacts.IN_VISIBLE_GROUP)
+                    .add(PhoneLookup.PHOTO_ID, "contacts_view." + Contacts.PHOTO_ID)
+                    .add(PhoneLookup.PHOTO_FILE_ID, "contacts_view." + Contacts.PHOTO_FILE_ID)
+                    .add(PhoneLookup.PHOTO_URI, "contacts_view." + Contacts.PHOTO_URI)
+                    .add(
+                            PhoneLookup.PHOTO_THUMBNAIL_URI,
+                            "contacts_view." + Contacts.PHOTO_THUMBNAIL_URI)
+                    .add(PhoneLookup.CUSTOM_RINGTONE, "contacts_view." + Contacts.CUSTOM_RINGTONE)
+                    .add(PhoneLookup.HAS_PHONE_NUMBER, "contacts_view." + Contacts.HAS_PHONE_NUMBER)
+                    .add(
+                            PhoneLookup.SEND_TO_VOICEMAIL,
+                            "contacts_view." + Contacts.SEND_TO_VOICEMAIL)
+                    .add(PhoneLookup.NUMBER, Phone.NUMBER)
+                    .add(PhoneLookup.TYPE, Phone.TYPE)
+                    .add(PhoneLookup.LABEL, Phone.LABEL)
+                    .add(PhoneLookup.NORMALIZED_NUMBER, Phone.NORMALIZED_NUMBER)
+                    .add(Data.PREFERRED_PHONE_ACCOUNT_COMPONENT_NAME)
+                    .add(Data.PREFERRED_PHONE_ACCOUNT_ID)
+                    .build();
 
     /** Contains the just the {@link Groups} columns */
     private static final ProjectionMap sGroupsProjectionMap = ProjectionMap.builder()
@@ -1272,6 +1321,10 @@ public class ContactsProvider2 extends AbstractContactsProvider
                 CONTACTS_FILTER_ENTERPRISE);
         matcher.addURI(ContactsContract.AUTHORITY, "contacts/filter_enterprise/*",
                 CONTACTS_FILTER_ENTERPRISE);
+
+        matcher.addURI(ContactsContract.AUTHORITY, "contacts/mimes", CONTACTS_MIMES);
+        matcher.addURI(ContactsContract.AUTHORITY, "contacts/mimes/filter/*",
+                CONTACTS_MIMES_FILTER);
 
         matcher.addURI(ContactsContract.AUTHORITY, "raw_contacts", RAW_CONTACTS);
         matcher.addURI(ContactsContract.AUTHORITY, "raw_contacts/#", RAW_CONTACTS_ID);
@@ -1593,6 +1646,10 @@ public class ContactsProvider2 extends AbstractContactsProvider
 
     // For testability. See setSyncAdapterTypesForTest
     private Supplier<SyncAdapterType[]> mSyncAdaptersSupplier = ContentResolver::getSyncAdapterTypes;
+
+    // For testability. Never changed in prod.
+    private CompatChangeEnabledFunction3 mCompatChangeEnabledFunction3 =
+            CompatChanges::isChangeEnabled;
 
     /**
      * Subscription change will trigger ACTION_PHONE_ACCOUNT_REGISTERED that broadcasts new
@@ -2447,6 +2504,26 @@ public class ContactsProvider2 extends AbstractContactsProvider
         mInProfileMode.set(false);
     }
 
+    private void maybeStripAndThrowSQLiteExceptionWithJson(Exception e, String permission,
+            LogFields.Builder logBuilder) {
+        // b/465133716: Using certain "json" tokens exposes a side channel attack by deciphering
+        // the error message, so we strip the same.
+        //
+        // Note: We use checkCallingPermission() instead of checkCallingOrSelfPermission()
+        // intentionally. If the call is coming from a non-binder thread (e.g., self-call
+        // after clearing identity), we don't want to grant access to the raw error message
+        // if it might contain sensitive info triggered by user-provided SQL.
+        if (e instanceof SQLiteException
+                && getContext().checkCallingPermission(permission) != PERMISSION_GRANTED) {
+            final String message = e.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT).contains("json")) {
+                SQLiteException strippedEx = new SQLiteException("Stripped exception message");
+                logBuilder.setException(strippedEx);
+                throw strippedEx;
+            }
+        }
+    }
+
     @Override
     public Uri insert(Uri uri, ContentValues values) {
         LogFields.Builder logBuilder = LogFields.Builder.aLogFields()
@@ -2456,9 +2533,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                         uri, ContactsContract.CALLER_IS_SYNCADAPTER, false))
                 .setStartNanos(SystemClock.elapsedRealtimeNanos())
                 .setUid(Binder.getCallingUid());
-        if (insertAccountLogging()) {
-            mLogFieldsBuilderHolder.set(logBuilder);
-        }
+        mLogFieldsBuilderHolder.set(logBuilder);
 
         Uri resultUri = null;
 
@@ -2482,15 +2557,16 @@ public class ContactsProvider2 extends AbstractContactsProvider
             resultUri = super.insert(uri, values);
             return resultUri;
         } catch (Exception e) {
+            maybeStripAndThrowSQLiteExceptionWithJson(e, WRITE_PERMISSION, logBuilder);
             logBuilder.setException(e);
             throw e;
         } finally {
-            if (insertAccountLogging()) {
-                logBuilder.detectCallerAccountTypeOwnership(getContext().getPackageManager(),
-                        AccountManager.get(getContext()).getAuthenticatorTypes())
-                        .detectAccountSyncMode(mSyncAdaptersSupplier.get());
-                mLogFieldsBuilderHolder.remove();
-            }
+            logBuilder
+                    .detectCallerAccountTypeOwnership(
+                            getContext().getPackageManager(),
+                            AccountManager.get(getContext()).getAuthenticatorTypes())
+                    .detectAccountSyncMode(mSyncAdaptersSupplier.get());
+            mLogFieldsBuilderHolder.remove();
             LogUtils.log(logBuilder.setResultUri(resultUri).setResultCount(
                     resultUri == null ? 0 : 1).build());
         }
@@ -2528,6 +2604,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
             updates = super.update(uri, values, selection, selectionArgs);
             return updates;
         } catch (Exception e) {
+            maybeStripAndThrowSQLiteExceptionWithJson(e, WRITE_PERMISSION, logBuilder);
             logBuilder.setException(e);
             throw e;
         } finally {
@@ -2566,6 +2643,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
             deletes = super.delete(uri, selection, selectionArgs);
             return deletes;
         } catch (Exception e) {
+            maybeStripAndThrowSQLiteExceptionWithJson(e, WRITE_PERMISSION, logBuilder);
             logBuilder.setException(e);
             throw e;
         } finally {
@@ -2695,12 +2773,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                                     LogUtils.MethodCall.GET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS)
                             : null;
             try {
-                if (newDefaultAccountApiEnabled()) {
-                    return queryDefaultAccountForNewContacts();
-                } else {
-                    throw new UnsupportedOperationException(
-                            "Query default account for new contacts is not supported.");
-                }
+                return queryDefaultAccountForNewContacts();
             } catch (Exception e) {
                 if (enableCallMethodLogging) {
                     logBuilder.setException(e);
@@ -2717,13 +2790,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                             .setMethodCalled(LogUtils.MethodCall.GET_ELIGIBLE_CLOUD_ACCOUNTS)
                             : null;
             try {
-                if (newDefaultAccountApiEnabled()) {
-                    return queryEligibleDefaultAccounts();
-                } else {
-                    throw new UnsupportedOperationException(
-                            "Query eligible account that can be set as cloud default account "
-                                    + "is not supported.");
-                }
+                return queryEligibleDefaultAccounts();
             } catch (Exception e) {
                 if (enableCallMethodLogging) {
                     logBuilder.setException(e);
@@ -2744,12 +2811,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                                     LogUtils.MethodCall.SET_DEFAULT_ACCOUNT_FOR_NEW_CONTACTS)
                             : null;
             try {
-                if (newDefaultAccountApiEnabled()) {
-                    return setDefaultAccountForNewContactsSetting(extras);
-                } else {
-                    throw new UnsupportedOperationException(
-                            "Set default account for new contacts is not supported.");
-                }
+                return setDefaultAccountForNewContactsSetting(extras);
             } catch (Exception e) {
                 if (enableCallMethodLogging) {
                     logBuilder.setException(e);
@@ -2768,7 +2830,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                                     LogUtils.MethodCall.MOVE_LOCAL_CONTACTS_TO_DEFAULT_ACCOUNT)
                             : null;
             try {
-                if (!newDefaultAccountApiEnabled() || disableCp2AccountMoveFlag()) {
+                if (disableCp2AccountMoveFlag()) {
                     throw new UnsupportedOperationException(
                             "Move local contacts to cloud default account is not supported");
                 }
@@ -2790,10 +2852,6 @@ public class ContactsProvider2 extends AbstractContactsProvider
             }
         } else if (RawContacts.DefaultAccount.GET_NUMBER_OF_MOVABLE_LOCAL_CONTACTS_METHOD
                 .equals(method)) {
-            if (!newDefaultAccountApiEnabled()) {
-                throw new UnsupportedOperationException(
-                        "Getting the count of local contacts to move is not supported");
-            }
             if (disableCp2AccountMoveFlag()) {
                 Log.w(TAG, "Cp2AccountMoveFlag disabled");
                 return new Bundle();
@@ -2814,7 +2872,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                                     LogUtils.MethodCall.MOVE_SIM_CONTACTS_TO_DEFAULT_ACCOUNT)
                             : null;
             try {
-                if (!newDefaultAccountApiEnabled() || disableCp2AccountMoveFlag()) {
+                if (disableCp2AccountMoveFlag()) {
                     throw new UnsupportedOperationException(
                             "Move SIM contacts to cloud default account is not supported");
                 }
@@ -2836,10 +2894,6 @@ public class ContactsProvider2 extends AbstractContactsProvider
             }
         } else if (RawContacts.DefaultAccount.GET_NUMBER_OF_MOVABLE_SIM_CONTACTS_METHOD
                 .equals(method)) {
-            if (!newDefaultAccountApiEnabled()) {
-                throw new UnsupportedOperationException(
-                        "Getting the count of SIM contacts to move is not supported");
-            }
             if (disableCp2AccountMoveFlag()) {
                 return new Bundle();
             }
@@ -3466,8 +3520,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
             case RAW_CONTACTS:
             case PROFILE_RAW_CONTACTS: {
                 invalidateFastScrollingIndexCache();
-                id = insertRawContact(uri, values, callerIsSyncAdapter,
-                        newDefaultAccountApiEnabled() && match == RAW_CONTACTS);
+                id = insertRawContact(uri, values, callerIsSyncAdapter, match == RAW_CONTACTS);
                 mSyncToNetwork |= !callerIsSyncAdapter;
                 break;
             }
@@ -3498,8 +3551,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
             }
 
             case GROUPS: {
-                id = insertGroup(uri, values, callerIsSyncAdapter,
-                        newDefaultAccountApiEnabled());
+                id = insertGroup(uri, values, callerIsSyncAdapter, true);
                 mSyncToNetwork |= !callerIsSyncAdapter;
                 break;
             }
@@ -3688,6 +3740,11 @@ public class ContactsProvider2 extends AbstractContactsProvider
         final String mimeType = inputValues.getAsString(Data.MIMETYPE);
         if (TextUtils.isEmpty(mimeType)) {
             throw new IllegalArgumentException(Data.MIMETYPE + " is required");
+        }
+
+        if (android.app.privatecompute.flags.Flags.enablePccFrameworkSupport()
+                && mPccUidChecker.isPrivateComputeCoreUid(Binder.getCallingUid())) {
+            PccUtils.validateDataWriteForPcc(mimeType);
         }
 
         if (Phone.CONTENT_ITEM_TYPE.equals(mimeType)) {
@@ -3986,17 +4043,9 @@ public class ContactsProvider2 extends AbstractContactsProvider
 
     private Uri insertSettings(Uri uri, ContentValues values) {
         final AccountWithDataSet account;
-        if (insertAccountLogging()) {
-            InsertAccountValidator.ValidationResultWithDetails validationResult =
-                    mAccountResolver.getAccountValidationResultForContactAddition(uri, values,
-                            false);
-            account = mAccountResolver.resolveAccountWithDataSet(validationResult, false, false);
-        } else {
-            account = mAccountResolver.resolveAccountWithDataSet(uri, values,
-                    /*applyDefaultAccount=*/false, /*shouldValidateAccountForContactAddition=*/
-                    false,
-                    false);
-        }
+        InsertAccountValidator.ValidationResultWithDetails validationResult =
+                mAccountResolver.getAccountValidationResultForContactAddition(uri, values, false);
+        account = mAccountResolver.resolveAccountWithDataSet(validationResult, false, false);
 
         // Note that the following check means the local account settings cannot be created with
         // an insert because resolveAccountWithDataSet returns null for it. However, the settings
@@ -4764,7 +4813,6 @@ public class ContactsProvider2 extends AbstractContactsProvider
     @Override
     protected int updateInTransaction(
             Uri uri, ContentValues values, String selection, String[] selectionArgs) {
-
         if (VERBOSE_LOGGING) {
             Log.v(TAG, "updateInTransaction: uri=" + uri +
                     "  selection=[" + selection + "]  args=" + Arrays.toString(selectionArgs) +
@@ -4880,7 +4928,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                 invalidateFastScrollingIndexCache();
                 selection = appendAccountIdToSelection(uri, selection);
                 count = updateRawContacts(values, selection, selectionArgs, callerIsSyncAdapter,
-                         newDefaultAccountApiEnabled() && match == RAW_CONTACTS);
+                          match == RAW_CONTACTS);
                 break;
             }
 
@@ -4891,11 +4939,11 @@ public class ContactsProvider2 extends AbstractContactsProvider
                     selectionArgs = insertSelectionArg(selectionArgs, String.valueOf(rawContactId));
                     count = updateRawContacts(values, RawContacts._ID + "=?"
                                     + " AND(" + selection + ")", selectionArgs,
-                            callerIsSyncAdapter, newDefaultAccountApiEnabled());
+                            callerIsSyncAdapter, true);
                 } else {
                     mSelectionArgs1[0] = String.valueOf(rawContactId);
                     count = updateRawContacts(values, RawContacts._ID + "=?", mSelectionArgs1,
-                            callerIsSyncAdapter, newDefaultAccountApiEnabled());
+                            callerIsSyncAdapter, true);
                 }
                 break;
             }
@@ -5192,24 +5240,18 @@ public class ContactsProvider2 extends AbstractContactsProvider
                         ? updatedDataSet : c.getString(GroupAccountQuery.DATA_SET);
 
                 if (isAccountChanging) {
-                    if (newDefaultAccountApiEnabled() && isAccountRestrictionEnabled()) {
-                        if (insertAccountLogging()) {
-                            InsertAccountValidator.ValidationResultWithDetails validationResult =
-                                    mAccountResolver.getAccountValidationResultForContactAddition(
-                                            updatedAccountName, updatedAccountType, null,
-                                            isAppAllowedToSyncSimContacts());
-                            mAccountResolver.requireValidAccount(validationResult,
-                                    CompatChanges.isChangeEnabled(
-                                            ChangeIds.RESTRICT_CONTACTS_CREATION_IN_ACCOUNTS,
-                                            Binder.getCallingUid()));
-                        } else {
-                            mAccountResolver.validateAccountForContactAddition(updatedAccountName,
-                                    updatedAccountType,
-                                    CompatChanges.isChangeEnabled(
-                                            ChangeIds.RESTRICT_CONTACTS_CREATION_IN_ACCOUNTS,
-                                            Binder.getCallingUid()),
-                                    isAppAllowedToSyncSimContacts());
-                        }
+                    if (isAccountRestrictionEnabled()) {
+                        InsertAccountValidator.ValidationResultWithDetails validationResult =
+                                mAccountResolver.getAccountValidationResultForContactAddition(
+                                        updatedAccountName,
+                                        updatedAccountType,
+                                        null,
+                                        isAppAllowedToSyncSimContacts());
+                        mAccountResolver.requireValidAccount(
+                                validationResult,
+                                CompatChanges.isChangeEnabled(
+                                        ChangeIds.RESTRICT_CONTACTS_CREATION_IN_ACCOUNTS,
+                                        Binder.getCallingUid()));
                     }
 
                     final long accountId = dbHelper.getOrCreateAccountIdInTransaction(
@@ -5529,6 +5571,12 @@ public class ContactsProvider2 extends AbstractContactsProvider
         final SQLiteDatabase db = mDbHelper.get().getWritableDatabase();
 
         final String mimeType = c.getString(DataRowHandler.DataUpdateQuery.MIMETYPE);
+
+        if (android.app.privatecompute.flags.Flags.enablePccFrameworkSupport()
+                && mPccUidChecker.isPrivateComputeCoreUid(Binder.getCallingUid())) {
+            PccUtils.validateDataWriteForPcc(mimeType);
+        }
+
         if (Phone.CONTENT_ITEM_TYPE.equals(mimeType)) {
             maybeTrimLongPhoneNumber(values);
         }
@@ -6214,13 +6262,18 @@ public class ContactsProvider2 extends AbstractContactsProvider
         try {
             cursor = queryInternal(uri, projection, selection, selectionArgs, sortOrder,
                     cancellationSignal);
+            if (cursor != null) {
+                // Consuming the cursor allows the actual exception (if any) thrown to be
+                // caught in the exception block below.
+                logBuilder.setResultCount(cursor.getCount());
+            }
             return cursor;
         } catch (Exception e) {
+            maybeStripAndThrowSQLiteExceptionWithJson(e, READ_PERMISSION, logBuilder);
             logBuilder.setException(e);
             throw e;
         } finally {
-            LogUtils.log(
-                    logBuilder.setResultCount(cursor == null ? 0 : cursor.getCount()).build());
+            LogUtils.log(logBuilder.build());
         }
     }
 
@@ -6397,7 +6450,8 @@ public class ContactsProvider2 extends AbstractContactsProvider
         // process.
         final int myUid = android.os.Process.myUid();
         final int callingUid = Binder.getCallingUid();
-        return (myUid != callingUid) && UserHandle.isSameApp(myUid, callingUid);
+        return (myUid != callingUid)
+                && PccAwareUidComparator.isSameApp(getContext(), myUid, callingUid);
     }
 
     private boolean doesCallerHoldInteractAcrossUserPermission() {
@@ -6550,11 +6604,35 @@ public class ContactsProvider2 extends AbstractContactsProvider
                         "  Caller=" + getCallingPackage() +
                         "  User=" + UserUtils.getCurrentUserHandle(getContext()));
             }
+            final String packageName = directoryInfo.packageName;
+            // enforce permissions
+            if (directoryProviderQueryPermissionCheck()) {
+                final int queryType = sUriMatcher.match(uri);
+                final PackageManager pm = getContext().getPackageManager();
+                UserHandle userHandle = getContext().getUser();
+                if (mCompatChangeEnabledFunction3.isChangeEnabled(
+                        ChangeIds.REQUIRE_PERMISSIONS_FOR_DIRECTORY_QUERIES,
+                        directoryInfo.packageName, userHandle)) {
+                    if (queryType == PHONE_LOOKUP || queryType == PHONES_FILTER) {
+                        if (pm.checkPermission(READ_CALL_LOG, packageName) != PERMISSION_GRANTED) {
+                            Log.w(TAG, "Package " + packageName
+                                    + " does not have permission for phone lookup queries.");
+                            return null;
+                        }
+                    }
+                    if (pm.checkPermission(WRITE_CONTACTS, packageName) != PERMISSION_GRANTED) {
+                        Log.w(TAG, "Package " + packageName
+                                + " does not have permission for contact lookup queries.");
+                        return null;
+                    }
+                }
+            }
             cursor = getContext().getContentResolver().query(
                     directoryUri, projection, selection, selectionArgs, sortOrder);
             if (cursor == null) {
                 return null;
             }
+
         } catch (RuntimeException e) {
             Log.w(TAG, "Directory query failed", e);
             return null;
@@ -6715,7 +6793,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                 Directory.DIRECTORY_AUTHORITY,
                 Directory.ACCOUNT_NAME,
                 Directory.ACCOUNT_TYPE,
-                Directory.PACKAGE_NAME
+                Directory.PACKAGE_NAME,
         };
 
         public static final int DIRECTORY_ID = 0;
@@ -6811,6 +6889,10 @@ public class ContactsProvider2 extends AbstractContactsProvider
                     long contactId = Long.parseLong(pathSegments.get(3));
                     SQLiteQueryBuilder lookupQb = new SQLiteQueryBuilder();
                     setTablesAndProjectionMapForContacts(lookupQb, projection);
+                    if (canEnforceStrictSqlChecksForQueries()) {
+                        lookupQb.setStrictColumns(true);
+                        lookupQb.setStrictGrammar(true);
+                    }
 
                     Cursor c = queryWithContactIdAndLookupKey(lookupQb, db,
                             projection, selection, selectionArgs, sortOrder, groupBy, limit,
@@ -6822,6 +6904,10 @@ public class ContactsProvider2 extends AbstractContactsProvider
                 }
 
                 setTablesAndProjectionMapForContacts(qb, projection);
+                if (canEnforceStrictSqlChecksForQueries()) {
+                    qb.setStrictColumns(true);
+                    qb.setStrictGrammar(true);
+                }
                 selectionArgs = insertSelectionArg(selectionArgs,
                         String.valueOf(lookupContactIdByLookupKey(db, lookupKey)));
                 qb.appendWhere(Contacts._ID + "=?");
@@ -6866,6 +6952,35 @@ public class ContactsProvider2 extends AbstractContactsProvider
                     qb.appendWhere(" AND " + Data._ID + "=" + Contacts.PHOTO_ID);
                 }
                 qb.appendWhere(" AND " + Data.CONTACT_ID + "=?");
+                break;
+            }
+
+            case CONTACTS_MIMES: {
+                // This URI is added for the system contacts picker. Restrict access to callers
+                // holding the MANAGE_CONTACTS_PICKER_SESSION permission to ensure only system
+                // components can use it.
+                ContactsPermissions.enforceSystemContactsPickerPermission(getContext());
+
+                setTablesAndProjectionMapForContactsWithMimetypes(qb, uri, projection, null,
+                        directoryId, false);
+                appendLocalDirectoryAndAccountSelectionIfNeeded(qb, directoryId, uri);
+                break;
+            }
+
+            case CONTACTS_MIMES_FILTER: {
+                // This URI is added for the system contacts picker. Restrict access to callers
+                // holding the MANAGE_CONTACTS_PICKER_SESSION permission to ensure only system
+                // components can use it.
+                ContactsPermissions.enforceSystemContactsPickerPermission(getContext());
+
+                String filterParam = getFilterParam(uri);
+
+                boolean deferredSnipRequested = deferredSnippetingRequested(uri);
+                snippetDeferred = isSingleWordQuery(filterParam)
+                        && deferredSnipRequested && snippetNeeded(projection);
+
+                setTablesAndProjectionMapForContactsWithMimetypes(qb, uri, projection, filterParam,
+                        directoryId, snippetDeferred);
                 break;
             }
 
@@ -6929,12 +7044,9 @@ public class ContactsProvider2 extends AbstractContactsProvider
             }
 
             case CONTACTS_FILTER: {
-                String filterParam = "";
-                boolean deferredSnipRequested = deferredSnippetingRequested(uri);
-                if (uri.getPathSegments().size() > 2) {
-                    filterParam = uri.getLastPathSegment();
-                }
+                String filterParam = getFilterParam(uri);
 
+                boolean deferredSnipRequested = deferredSnippetingRequested(uri);
                 // If the query consists of a single word, we can do snippetizing after-the-fact for
                 // a performance boost. Otherwise, we can't defer.
                 snippetDeferred = isSingleWordQuery(filterParam)
@@ -7706,6 +7818,10 @@ public class ContactsProvider2 extends AbstractContactsProvider
                 final String usageType = uri.getQueryParameter(DataUsageFeedback.USAGE_TYPE);
                 final int typeInt = getDataUsageFeedbackType(usageType, USAGE_TYPE_ALL);
                 setTablesAndProjectionMapForData(qb, uri, projection, false, typeInt);
+                if (canEnforceStrictSqlChecksForQueries()) {
+                    qb.setStrictColumns(true);
+                    qb.setStrictGrammar(true);
+                }
                 if (uri.getBooleanQueryParameter(Data.VISIBLE_CONTACTS_ONLY, false)) {
                     qb.appendWhere(" AND " + Data.CONTACT_ID + " in " +
                             Tables.DEFAULT_DIRECTORY);
@@ -7716,6 +7832,10 @@ public class ContactsProvider2 extends AbstractContactsProvider
             case DATA_ID:
             case PROFILE_DATA_ID: {
                 setTablesAndProjectionMapForData(qb, uri, projection, false);
+                if (canEnforceStrictSqlChecksForQueries()) {
+                    qb.setStrictColumns(true);
+                    qb.setStrictGrammar(true);
+                }
                 selectionArgs = insertSelectionArg(selectionArgs, uri.getLastPathSegment());
                 qb.appendWhere(" AND " + Data._ID + "=?");
                 break;
@@ -8071,6 +8191,14 @@ public class ContactsProvider2 extends AbstractContactsProvider
         }
 
         return cursor;
+    }
+
+    private String getFilterParam(Uri uri) {
+        String filterParam = "";
+        if (uri.getPathSegments().size() > 2) {
+            filterParam = uri.getLastPathSegment();
+        }
+        return filterParam;
     }
 
     // Rewrites query sort orders using SORT_KEY_{PRIMARY, ALTERNATIVE}
@@ -9292,6 +9420,77 @@ public class ContactsProvider2 extends AbstractContactsProvider
         qb.setProjectionMap(sStatusUpdatesProjectionMap);
     }
 
+    /**
+     * Sets up the query builder for contacts filtered by the presence of specific mimetypes.
+     * This method constructs a subquery to identify contacts that have data rows matching
+     * the requested mimetypes.
+     *
+     * The matching logic is either AND or OR, depending on the
+     * {@link Contacts#MATCH_ALL_MIMETYPES_PARAM_KEY} query parameter. If true (AND), contacts must
+     * have data rows for all requested mimetypes set in
+     * {@link Contacts#REQUESTED_MIMETYPES_PARAM_KEY}. If false or not set (OR operation), contacts
+     * must have data rows for at least one of the specified mimetypes set in
+     * {@link Contacts#REQUESTED_MIMETYPES_PARAM_KEY}.
+     */
+    private void setTablesAndProjectionMapForContactsWithMimetypes(SQLiteQueryBuilder qb, Uri uri,
+            String[] projection, String filter, long directoryId, boolean deferSnippeting) {
+
+        if (!TextUtils.isEmpty(filter)) {
+            // For filter queries, join with the search index to get snippets.
+            setTablesAndProjectionMapForContactsWithSnippet(qb, uri, projection, filter,
+                    directoryId, deferSnippeting);
+        } else {
+            setTablesAndProjectionMapForContacts(qb, projection);
+        }
+
+        final String mimeTypes = uri.getQueryParameter(Contacts.REQUESTED_MIMETYPES_PARAM_KEY);
+        if (TextUtils.isEmpty(mimeTypes)) {
+            return;
+        }
+
+        final boolean requireAll = readBooleanQueryParameter(uri,
+                Contacts.MATCH_ALL_MIMETYPES_PARAM_KEY, false);
+
+        final String[] mimeTypeArray = mimeTypes.split(",");
+        if (mimeTypeArray.length == 0) {
+            return;
+        }
+
+        final String mimeTypeIds = mDbHelper.get().getMimeTypeIdsAsString(mimeTypeArray);
+
+        final StringBuilder subQuery = new StringBuilder();
+
+        if (requireAll) { // AND logic: Optimized with nested EXISTS  See b/478851815.
+            for (int i = 0; i < mimeTypeArray.length; i++) {
+                if (i > 0) subQuery.append(" AND ");
+
+                long mimeTypeId = mDbHelper.get().getMimeTypeId(mimeTypeArray[i]);
+
+                subQuery.append("EXISTS (SELECT 1 FROM " + Tables.DATA);
+                subQuery.append(" JOIN " + Tables.RAW_CONTACTS + " ON ("
+                        + Tables.DATA + "." + Data.RAW_CONTACT_ID + "=" + Tables.RAW_CONTACTS + "."
+                        + RawContacts._ID + ")");
+                subQuery.append(" WHERE " + Tables.RAW_CONTACTS + "." + RawContacts.CONTACT_ID
+                        + "=" + Views.CONTACTS + "." + Contacts._ID);
+                subQuery.append(" AND " + DataColumns.MIMETYPE_ID + "=" + mimeTypeId + ")");
+            }
+            qb.appendWhere(subQuery.toString());
+
+        } else { // OR logic: Optimized with EXISTS  See b/478851815.
+            subQuery.append("EXISTS (SELECT 1 FROM " + Tables.DATA);
+            subQuery.append(" JOIN " + Tables.RAW_CONTACTS + " ON ("
+                    + Tables.DATA + "." + Data.RAW_CONTACT_ID + "=" + Tables.RAW_CONTACTS + "."
+                    + RawContacts._ID + ")");
+            subQuery.append(" WHERE " + Tables.RAW_CONTACTS + "." + RawContacts.CONTACT_ID
+                    + "=" + Views.CONTACTS + "." + Contacts._ID);
+            subQuery.append(
+                    " AND " + Tables.DATA + "." + DataColumns.MIMETYPE_ID + " IN (" + mimeTypeIds
+                            + "))");
+
+            qb.appendWhere(subQuery.toString());
+        }
+    }
+
     private void setTablesAndProjectionMapForStreamItems(SQLiteQueryBuilder qb) {
         qb.setTables(Views.STREAM_ITEMS);
         qb.setProjectionMap(sStreamItemsProjectionMap);
@@ -9430,31 +9629,7 @@ public class ContactsProvider2 extends AbstractContactsProvider
                         "))");
             }
         }
-        qb.appendWhere(sb.toString());
-    }
-
-    private void appendAccountFromParameter(SQLiteQueryBuilder qb, Uri uri) {
-        final AccountWithDataSet accountWithDataSet = getAccountWithDataSetFromUri(uri);
-
-        // Accounts are valid by only checking one parameter, since we've
-        // already ruled out partial accounts.
-        final boolean validAccount = !TextUtils.isEmpty(accountWithDataSet.getAccountName());
-        if (validAccount) {
-            String toAppend = "(" + RawContacts.ACCOUNT_NAME + "="
-                    + DatabaseUtils.sqlEscapeString(accountWithDataSet.getAccountName()) + " AND "
-                    + RawContacts.ACCOUNT_TYPE + "="
-                    + DatabaseUtils.sqlEscapeString(accountWithDataSet.getAccountType());
-            if (accountWithDataSet.getDataSet() == null) {
-                toAppend += " AND " + RawContacts.DATA_SET + " IS NULL";
-            } else {
-                toAppend += " AND " + RawContacts.DATA_SET + "=" +
-                        DatabaseUtils.sqlEscapeString(accountWithDataSet.getDataSet());
-            }
-            toAppend += ")";
-            qb.appendWhere(toAppend);
-        } else {
-            qb.appendWhere("1");
-        }
+        qb.appendWhereStandalone(sb.toString());
     }
 
     private void appendAccountIdFromParameter(SQLiteQueryBuilder qb, Uri uri) {
@@ -10856,25 +11031,23 @@ public class ContactsProvider2 extends AbstractContactsProvider
                         Binder.getCallingUid());
 
         final AccountWithDataSet account;
-        if (insertAccountLogging()) {
-            InsertAccountValidator.ValidationResultWithDetails validationResult =
-                    mAccountResolver.getAccountValidationResultForContactAddition(uri, values,
-                            isAppAllowedToSyncSimContacts());
-            LogFields.Builder logBuilder = mLogFieldsBuilderHolder.get();
-            if (logBuilder != null) {
-                logBuilder.setAccountType(validationResult.getRequestedAccountType())
-                        .setDefaultAccountState(validationResult.getDefaultAccountState())
-                        .setSystemAccount(validationResult.isSystemAccount())
-                        .setLocalAccount(validationResult.isLocalAccount())
-                        .setSimAccount(validationResult.getMatchingSimAccount());
-            }
-            account = mAccountResolver.resolveAccountWithDataSet(validationResult,
-                    applyDefaultAccount, shouldValidateAccountForContactAddition);
-        } else {
-            account = mAccountResolver.resolveAccountWithDataSet(uri, values,
-                    applyDefaultAccount, shouldValidateAccountForContactAddition,
-                    isAppAllowedToSyncSimContacts());
+        InsertAccountValidator.ValidationResultWithDetails validationResult =
+                mAccountResolver.getAccountValidationResultForContactAddition(
+                        uri, values, isAppAllowedToSyncSimContacts());
+        LogFields.Builder logBuilder = mLogFieldsBuilderHolder.get();
+        if (logBuilder != null) {
+            logBuilder
+                    .setAccountType(validationResult.getRequestedAccountType())
+                    .setDefaultAccountState(validationResult.getDefaultAccountState())
+                    .setSystemAccount(validationResult.isSystemAccount())
+                    .setLocalAccount(validationResult.isLocalAccount())
+                    .setSimAccount(validationResult.getMatchingSimAccount());
         }
+        account =
+                mAccountResolver.resolveAccountWithDataSet(
+                        validationResult,
+                        applyDefaultAccount,
+                        shouldValidateAccountForContactAddition);
         final long id = mDbHelper.get().getOrCreateAccountIdInTransaction(account);
         values.put(RawContactsColumns.ACCOUNT_ID, id);
 
@@ -11034,6 +11207,12 @@ public class ContactsProvider2 extends AbstractContactsProvider
         mSyncAdaptersSupplier = () -> syncAdapterTypes;
     }
 
+    @NeededForTesting
+    public void setCompatChangeEnabledFunction3ForTest(
+            CompatChangeEnabledFunction3 testImpl) {
+        mCompatChangeEnabledFunction3 = testImpl;
+    }
+
     @VisibleForTesting
     public ProfileProvider getProfileProviderForTest() {
         return mProfileProvider;
@@ -11053,5 +11232,23 @@ public class ContactsProvider2 extends AbstractContactsProvider
     private boolean isDataProjectionRestricted() {
         return restrictPiiDataUriColumns() && CompatChanges
                 .isChangeEnabled(ChangeIds.RESTRICT_DATA_URI_COLUMNS, Binder.getCallingUid());
+    }
+
+    @RequiresPermission(
+            allOf = {
+                    android.Manifest.permission.READ_COMPAT_CHANGE_CONFIG,
+                    android.Manifest.permission.LOG_COMPAT_CHANGE
+            })
+    // TODO(b/484953293): Enforce this check on more URIs as well.
+    private boolean canEnforceStrictSqlChecksForQueries() {
+        // Strict Sql checks can be enforced when either
+        // 1. Call is forwarded from SessionsProvider
+        // 2. The caller is another app (not cp2) not holding READ_CONTACTS + flag is enabled
+        // + caller is compatible with the change.
+        return ContactsPickerSessionProvider.sIsForwardedFromSessionsProvider.get()
+                || (getContext().checkCallingOrSelfPermission(READ_PERMISSION) != PERMISSION_GRANTED
+                && enforceStrictSqlChecks()
+                && CompatChanges
+                .isChangeEnabled(ChangeIds.ENFORCE_STRICT_SQL_CHECKS, Binder.getCallingUid()));
     }
 }

@@ -20,6 +20,7 @@ package com.android.providers.contacts;
 import static android.Manifest.permission.READ_VOICEMAIL;
 
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
@@ -74,6 +75,7 @@ public class DbModifierWithNotification implements DatabaseModifier {
     private final VoicemailNotifier mVoicemailNotifier;
 
     private boolean mIsBulkOperation = false;
+    private boolean mIncludesVoipEntries;
 
     private static VoicemailNotifier sVoicemailNotifierForTest;
 
@@ -84,6 +86,13 @@ public class DbModifierWithNotification implements DatabaseModifier {
     public DbModifierWithNotification(String tableName, InsertHelper insertHelper,
             Context context) {
         this(tableName, null, insertHelper, context);
+    }
+
+    public DbModifierWithNotification(String tableName, SQLiteDatabase db,
+            InsertHelper insertHelper, boolean hasReadVoicemailPermission,
+            boolean includesVoipEntries, Context context) {
+        this(tableName, db, insertHelper, hasReadVoicemailPermission, context);
+        mIncludesVoipEntries = includesVoipEntries;
     }
 
     private DbModifierWithNotification(String tableName, SQLiteDatabase db,
@@ -117,7 +126,7 @@ public class DbModifierWithNotification implements DatabaseModifier {
                     packagesModified);
         }
         if (rowId > 0 && mIsCallsTable) {
-            notifyCallLogChange(mContext);
+            notifyCallLogChange(mContext, mIncludesVoipEntries);
         }
         return rowId;
     }
@@ -134,14 +143,19 @@ public class DbModifierWithNotification implements DatabaseModifier {
                     ContentUris.withAppendedId(mBaseUri, rowId), packagesModified);
         }
         if (rowId > 0 && mIsCallsTable) {
-            notifyCallLogChange(mContext);
+            notifyCallLogChange(mContext, mIncludesVoipEntries);
         }
         return rowId;
     }
 
-    public static void notifyCallLogChange(Context context) {
-        context.getContentResolver().notifyChange(Calls.CONTENT_URI, null, false);
-
+    public static void notifyCallLogChange(Context context, boolean includesVoipEntries) {
+        context.getContentResolver().notifyChange(Calls.CONTENT_URI, null, 0);
+        if (includesVoipEntries) {
+            // Observers should only be notified for deleted entries. Refer to
+            // CallLogProvider#deleteInternal.
+            context.getContentResolver().notifyChange(Calls.CONTENT_VOIP_URI, null,
+                    ContentResolver.NOTIFY_DELETE);
+        }
         Intent intent = new Intent("com.android.internal.action.CALL_LOG_CHANGE");
         intent.setComponent(new ComponentName("com.android.calllogbackup",
                 "com.android.calllogbackup.CallLogChangeReceiver"));
@@ -218,7 +232,7 @@ public class DbModifierWithNotification implements DatabaseModifier {
             notifyVoicemailChange(mBaseUri, packagesModified);
         }
         if (count > 0 && mIsCallsTable) {
-            notifyCallLogChange(mContext);
+            notifyCallLogChange(mContext, mIncludesVoipEntries);
         }
         if (hasMarkedRead) {
             // A "New" voicemail has been marked as read by the server. This voicemail is no longer
@@ -309,7 +323,7 @@ public class DbModifierWithNotification implements DatabaseModifier {
             notifyVoicemailChange(mBaseUri, packagesModified);
         }
         if (count > 0 && mIsCallsTable) {
-            notifyCallLogChange(mContext);
+            notifyCallLogChange(mContext, mIncludesVoipEntries);
         }
         return count;
     }

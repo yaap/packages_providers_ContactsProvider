@@ -19,7 +19,6 @@ package com.android.providers.contacts;
 import static android.Manifest.permission.SET_DEFAULT_ACCOUNT_FOR_CONTACTS;
 import static android.Manifest.permission.WRITE_CONTACTS;
 import static android.provider.ContactsContract.RawContacts.DefaultAccount;
-import static android.provider.Flags.newDefaultAccountApiEnabled;
 
 import android.accounts.Account;
 import android.accounts.AccountManager;
@@ -60,11 +59,6 @@ public class MoveContactsToDefaultAccountActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (!newDefaultAccountApiEnabled()) {
-            Log.w(TAG, "Default Account API flag not enabled, bailing out.");
-            setResultAndFinish(RESULT_CANCELED);
-            return;
-        }
         try {
             DefaultAccountAndState currentDefaultAccount =
                     DefaultAccount.getDefaultAccountForNewContacts(getContentResolver());

@@ -69,6 +69,7 @@ import com.android.providers.contacts.CallLogDatabaseHelper.DbProperties;
 import com.android.providers.contacts.CallLogDatabaseHelper.Tables;
 import com.android.providers.contacts.util.FileUtilities;
 import com.android.providers.contacts.util.NeededForTesting;
+import com.android.providers.contacts.util.PccAwareUidComparator;
 import com.android.providers.contacts.util.SelectionBuilder;
 import com.android.providers.contacts.util.UserUtils;
 
@@ -869,7 +870,8 @@ public class CallLogProvider extends ContentProvider {
     @Override
     public Bundle call(@NonNull String method, @Nullable String arg, @Nullable Bundle extras) {
         Log.i(TAG, "Fetching list of Uris to sync");
-        if (!UserHandle.isSameApp(android.os.Process.myUid(), Binder.getCallingUid())) {
+        if (!PccAwareUidComparator.isSameApp(
+                getContext(), android.os.Process.myUid(), Binder.getCallingUid())) {
             throw new SecurityException("call() functionality reserved"
                     + " for internal use by the call log.");
         }
@@ -1032,8 +1034,9 @@ public class CallLogProvider extends ContentProvider {
                 throw new UnsupportedOperationException("Cannot update URL: " + uri);
         }
 
-        int count = createDatabaseModifier(db, hasReadVoicemailPermission).update(uri, Tables.CALLS,
-                values, selectionBuilder.build(), selectionArgs);
+        int count = createDatabaseModifier(db, hasReadVoicemailPermission,
+                false /* includesVoipEntries */).update(uri, Tables.CALLS, values,
+                selectionBuilder.build(), selectionArgs);
 
         String logStr = String.format(Locale. getDefault(),
                 "update uid/pid=%d/%d, uri=%s, numChanged=%d",
@@ -1060,10 +1063,14 @@ public class CallLogProvider extends ContentProvider {
                 mVoicemailPermissions.callerHasReadAccess(getCallingPackage());
         final SQLiteDatabase db = mDbHelper.getWritableDatabase();
         final int matchedUriId = sURIMatcher.match(uri);
+        boolean callLogsFeatureV2Flag = android.telecom.flags.Flags.integratedCallLogsStage2();
         switch (matchedUriId) {
             case CALLS:
-                int count = createDatabaseModifier(db, hasReadVoicemailPermission).delete(
-                        Tables.CALLS, selectionBuilder.build(), selectionArgs);
+                boolean includesVoipEntries = callLogsFeatureV2Flag && includesVoipEntries(uri,
+                        selection, selectionArgs);
+                int count = createDatabaseModifier(db, hasReadVoicemailPermission,
+                        includesVoipEntries).delete(Tables.CALLS, selectionBuilder.build(),
+                        selectionArgs);
                 String logStr = String.format(Locale.getDefault(),
                         "delete uid/pid=%d/%d, uri=%s, numChanged=%d",
                         Binder.getCallingUid(), Binder.getCallingPid(), uri, count);
@@ -1082,8 +1089,9 @@ public class CallLogProvider extends ContentProvider {
                     return 0;
                 }
                 selectionBuilder.addClause(clause);
-                count = createDatabaseModifier(db, hasReadVoicemailPermission).delete(
-                    Tables.CALLS, selectionBuilder.build(), selectionArgs);
+                count = createDatabaseModifier(db, hasReadVoicemailPermission,
+                        callLogsFeatureV2Flag /* includesVoipEntries */).delete(Tables.CALLS,
+                        selectionBuilder.build(), selectionArgs);
                 logStr = String.format(Locale.getDefault(),
                     "delete uid/pid=%d/%d, uri=%s, numChanged=%d",
                     Binder.getCallingUid(), Binder.getCallingPid(), uri, count);
@@ -1098,16 +1106,19 @@ public class CallLogProvider extends ContentProvider {
 
     /**
      * Returns a {@link DatabaseModifier} that takes care of sending necessary notifications
-     * after the operation is performed.
+     * after the operation is performed. Passes information regarding whether VOIP entries are
+     * included in the update but this is only used for delete operations in order to notify apps
+     * that their call logs were deleted.
      */
-    private DatabaseModifier createDatabaseModifier(SQLiteDatabase db, boolean hasReadVoicemail) {
+    private DatabaseModifier createDatabaseModifier(SQLiteDatabase db, boolean hasReadVoicemail,
+            boolean includesVoipEntries) {
         return new DbModifierWithNotification(Tables.CALLS, db, null, hasReadVoicemail,
-                getContext());
+                includesVoipEntries, getContext());
     }
 
     /**
-     * Same as {@link #createDatabaseModifier(SQLiteDatabase)} but used for insert helper operations
-     * only.
+     * Same as {@link #createDatabaseModifier(SQLiteDatabase, Boolean, Boolean)} but used for
+     * insert helper operations only.
      */
     private DatabaseModifier createDatabaseModifier(DatabaseUtils.InsertHelper insertHelper) {
         return new DbModifierWithNotification(Tables.CALLS, insertHelper, getContext());
@@ -1518,5 +1529,36 @@ public class CallLogProvider extends ContentProvider {
             throw new SecurityException(
                     FileUtilities.INVALID_CALL_LOG_PATH_EXCEPTION_MESSAGE + pathToCheck);
         }
+    }
+
+    private boolean includesVoipEntries(Uri uri, String selection, String [] selectionArgs) {
+        Uri excludeVoicemailUri = removeQueryParameter(uri, Calls.ALLOW_VOICEMAILS_PARAM_KEY);
+        selection += (" AND " + CLAUSE_VOIP_LOG);
+        Cursor cursor = query(excludeVoicemailUri, new String [] {Calls._ID, Calls.UUID},
+                selection, selectionArgs, null);
+        if (cursor != null) {
+            try {
+                return cursor.getCount() > 0;
+            } finally {
+                cursor.close();
+            }
+        }
+        return false;
+    }
+
+    private Uri removeQueryParameter(Uri uri, String key) {
+        final Set<String> parameterNames = uri.getQueryParameterNames();
+        final Uri.Builder builder = uri.buildUpon();
+        // Clear all query parameters
+        builder.clearQuery();
+        for (String name : parameterNames) {
+            if (!name.equals(key)) {
+                List<String> values = uri.getQueryParameters(name);
+                for (String value : values) {
+                    builder.appendQueryParameter(name, value);
+                }
+            }
+        }
+        return builder.build();
     }
 }

@@ -4637,6 +4637,48 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
     }
 
     /**
+     * Converts an array of mimetypes into a comma-separated string of their IDs.
+     */
+    public String getMimeTypeIdsAsString(String[] mimeTypes) {
+        if (mimeTypes == null || mimeTypes.length == 0) {
+            return "";
+        }
+
+        final Map<String, Long> idMap = new HashMap<>();
+        final List<String> mimetypesToQuery = new ArrayList<>();
+
+        for (String mimeType : mimeTypes) {
+            Long id = mCommonMimeTypeIdsCache.get(mimeType);
+            if (id != null) {
+                idMap.put(mimeType, id);
+            } else {
+                if (!mimetypesToQuery.contains(mimeType)) {
+                    mimetypesToQuery.add(mimeType);
+                }
+            }
+        }
+
+        if (!mimetypesToQuery.isEmpty()) {
+            SQLiteDatabase db = getReadableDatabase();
+            for (String mimeType : mimetypesToQuery) {
+                long id = lookupMimeTypeId(db, mimeType);
+                if (id >= 0) {
+                    idMap.put(mimeType, id);
+                }
+            }
+        }
+
+        final StringBuilder mimeTypeIds = new StringBuilder();
+        for (int i = 0; i < mimeTypes.length; i++) {
+            if (i > 0) {
+                mimeTypeIds.append(",");
+            }
+            mimeTypeIds.append(idMap.get(mimeTypes[i]));
+        }
+        return mimeTypeIds.toString();
+    }
+
+    /**
      * Returns contact ID for the given contact or zero if it is NULL.
      */
     public long getContactId(long rawContactId) {

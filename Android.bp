@@ -23,6 +23,7 @@ android_app {
         "guava",
         "android.content.pm.flags-aconfig-java",
         "android.provider.flags-aconfig-java",
+        "android.app.privatecompute.flags-aconfig-java",
     ],
 
     // The Jacoco tool analyzes code coverage when running unit tests on the
@@ -38,7 +39,12 @@ android_app {
     privileged: true,
     optimize: {
         proguard_flags_files: ["proguard.flags"],
+        d8_on_eng: true,
     },
+    flags_packages: [
+        "android.content.flags-aconfig",
+        "contactsprovider_flags",
+    ],
 }
 
 java_library {

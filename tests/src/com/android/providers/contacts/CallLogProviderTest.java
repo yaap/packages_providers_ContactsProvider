@@ -202,9 +202,24 @@ public class CallLogProviderTest extends BaseContactsProvider2Test {
                 = mCallLogProvider.getCallLogDatabaseHelperForTest();
 
         // Mock SubscriptionManager
-        SubscriptionInfo subscriptionInfo = new SubscriptionInfo(
-                TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT, TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1,
-                        1, "a", "b", 1, 1, "test", 1, null, null, null, null, false, null, null);
+        SubscriptionInfo subscriptionInfo = new SubscriptionInfo.Builder()
+                .setId(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT)
+                .setIccId(TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1)
+                .setSimSlotIndex(1)
+                .setDisplayName("a")
+                .setCarrierName("b")
+                .setDisplayNameSource(1)
+                .setIconTint(1)
+                .setNumber("test")
+                .setDataRoaming(1)
+                .setIcon(null)
+                .setMcc(null)
+                .setMnc(null)
+                .setCountryIso(null)
+                .setEmbedded(false)
+                .setNativeAccessRules(null)
+                .setCardString(null)
+                .build();
         when(mSubscriptionManager.getActiveSubscriptionInfo(
                 eq(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT))).thenReturn(subscriptionInfo);
 
@@ -276,9 +291,24 @@ public class CallLogProviderTest extends BaseContactsProvider2Test {
                 = mCallLogProvider.getCallLogDatabaseHelperForTest();
 
         // Mock SubscriptionManager
-        SubscriptionInfo subscriptionInfo = new SubscriptionInfo(
-                TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT, TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1,
-                        1, "a", "b", 1, 1, "test", 1, null, null, null, null, false, null, null);
+        SubscriptionInfo subscriptionInfo = new SubscriptionInfo.Builder()
+                .setId(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT)
+                .setIccId(TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1)
+                .setSimSlotIndex(1)
+                .setDisplayName("a")
+                .setCarrierName("b")
+                .setDisplayNameSource(1)
+                .setIconTint(1)
+                .setNumber("test")
+                .setDataRoaming(1)
+                .setIcon(null)
+                .setMcc(null)
+                .setMnc(null)
+                .setCountryIso(null)
+                .setEmbedded(false)
+                .setNativeAccessRules(null)
+                .setCardString(null)
+                .build();
         List<SubscriptionInfo> subscriptionInfoList = new ArrayList<>();
         subscriptionInfoList.add(subscriptionInfo);
         when(mSubscriptionManager.getAllSubscriptionInfoList()).thenReturn(subscriptionInfoList);
@@ -433,49 +463,6 @@ public class CallLogProviderTest extends BaseContactsProvider2Test {
         c = mResolver.query(filterUri, null, null, null, null);
         assertEquals(0, c.getCount());
         c.close();
-    }
-
-    public void testAddCall() {
-        CallerInfo ci = new CallerInfo();
-        ci.setName("1-800-GOOG-411");
-        ci.numberType = Phone.TYPE_CUSTOM;
-        ci.numberLabel = "Directory";
-        final ComponentName sComponentName = new ComponentName(
-                "com.android.server.telecom",
-                "TelecomServiceImpl");
-        PhoneAccountHandle subscription = new PhoneAccountHandle(
-                sComponentName, "sub0");
-
-        // Allow self-calls in order to add the call
-        ContactsPermissions.ALLOW_SELF_CALL = true;
-        Uri uri = CallLogUtils.addCall(ci, getMockContext(), "1-800-263-7643",
-                Calls.PRESENTATION_ALLOWED, Calls.OUTGOING_TYPE, 0, subscription, 2000,
-                40, null, MISSED_REASON_NOT_MISSED, 0);
-        ContactsPermissions.ALLOW_SELF_CALL = false;
-        assertNotNull(uri);
-        assertEquals("0@" + CallLog.AUTHORITY, uri.getAuthority());
-
-        ContentValues values = new ContentValues();
-        values.put(Calls.TYPE, Calls.OUTGOING_TYPE);
-        values.put(Calls.FEATURES, 0);
-        values.put(Calls.NUMBER, "1-800-263-7643");
-        values.put(Calls.NUMBER_PRESENTATION, Calls.PRESENTATION_ALLOWED);
-        values.put(Calls.DATE, 2000);
-        values.put(Calls.DURATION, 40);
-        values.put(Calls.CACHED_NAME, ci.getName());
-        values.put(Calls.CACHED_NUMBER_TYPE, (String) null);
-        values.put(Calls.CACHED_NUMBER_LABEL, (String) null);
-        values.put(Calls.COUNTRY_ISO, "us");
-        values.put(Calls.GEOCODED_LOCATION, "usa");
-        values.put(Calls.PHONE_ACCOUNT_COMPONENT_NAME,
-                "com.android.server.telecom/TelecomServiceImpl");
-        values.put(Calls.PHONE_ACCOUNT_ID, "sub0");
-        // Casting null to Long as there are many forms of "put" which have nullable second
-        // parameters and the compiler needs a hint as to which form is correct.
-        values.put(Calls.DATA_USAGE, (Long) null);
-        values.put(Calls.MISSED_REASON, 0);
-        values.put(Calls.IS_PHONE_ACCOUNT_MIGRATION_PENDING, 0);
-        assertStoredValues(uri, values);
     }
 
     // Test to check that the calls and voicemail uris returns expected results.

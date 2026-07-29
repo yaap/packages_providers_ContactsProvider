@@ -18,7 +18,16 @@ package com.android.providers.contacts;
 
 import static android.content.pm.Flags.FLAG_STAY_STOPPED;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+import android.Manifest;
 import android.accounts.Account;
+import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
@@ -30,21 +39,22 @@ import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.provider.ContactsContract;
-import android.provider.ContactsContract.AggregationExceptions;
 import android.provider.ContactsContract.Contacts;
 import android.provider.ContactsContract.Directory;
-import android.provider.ContactsContract.RawContacts;
 import android.test.mock.MockContentProvider;
 import android.util.Log;
 
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.providers.contacts.ContactsDatabaseHelper.AggregationExceptionColumns;
+import com.android.providers.contacts.flags.Flags;
 
 import com.google.android.collect.Lists;
 
@@ -52,8 +62,10 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -68,6 +80,10 @@ public class ContactDirectoryManagerTest extends BaseContactsProvider2Test {
 
     @Rule
     public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
+
     private static final String TAG = "ContactDirectoryManagerTest";
 
     private ContactsMockPackageManager mPackageManager;
@@ -77,8 +93,10 @@ public class ContactDirectoryManagerTest extends BaseContactsProvider2Test {
     private ContactDirectoryManager mDirectoryManager;
 
     public static class MockContactDirectoryProvider extends MockContentProvider {
-
         private String mAuthority;
+
+        // Mock that receives all queries except the directories query.
+        public final ContentProvider mock = mock(MockContentProvider.class);
 
         private MatrixCursor mResponse;
 
@@ -100,31 +118,13 @@ public class ContactDirectoryManagerTest extends BaseContactsProvider2Test {
         @Override
         public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
                 String sortOrder) {
-
             if (uri.toString().equals("content://" + mAuthority + "/directories")) {
                 // Should tolerate multiple queries.
                 mResponse.moveToPosition(-1);
                 return mResponse;
-            } else if (uri.toString().startsWith("content://" + mAuthority + "/contacts")) {
-                MatrixCursor cursor = new MatrixCursor(
-                        new String[] { "projection", "selection", "selectionArgs", "sortOrder",
-                                "accountName", "accountType"});
-                cursor.addRow(new Object[] {
-                    Lists.newArrayList(projection).toString(),
-                    selection,
-                    Lists.newArrayList(selectionArgs).toString(),
-                    sortOrder,
-                    uri.getQueryParameter(RawContacts.ACCOUNT_NAME),
-                    uri.getQueryParameter(RawContacts.ACCOUNT_TYPE),
-                });
-                return cursor;
-            } else if (uri.toString().startsWith(
-                    "content://" + mAuthority + "/aggregation_exceptions")) {
-                return new MatrixCursor(projection);
+            } else {
+                return mock.query(uri, projection, selection, selectionArgs, sortOrder);
             }
-
-            fail("Unexpected uri: " + uri);
-            return null;
         }
     }
 
@@ -577,6 +577,9 @@ public class ContactDirectoryManagerTest extends BaseContactsProvider2Test {
         mPackageManager.setInstalledPackages(
                 Lists.newArrayList(createProviderPackage("test.package1", "authority1"),
                         createPackage("test.packageX", "authorityX", false)));
+        mPackageManager.grantRuntimePermission("test.package1", Manifest.permission.WRITE_CONTACTS);
+        mPackageManager.grantRuntimePermission("test.package1", Manifest.permission.READ_CALL_LOG);
+
 
         MockContactDirectoryProvider provider1 = (MockContactDirectoryProvider) addProvider(
                 MockContactDirectoryProvider.class, "authority1");
@@ -596,28 +599,76 @@ public class ContactDirectoryManagerTest extends BaseContactsProvider2Test {
 
         Uri contentUri = Contacts.CONTENT_URI.buildUpon().appendQueryParameter(
                 ContactsContract.DIRECTORY_PARAM_KEY, String.valueOf(directoryId)).build();
+        MatrixCursor queryResult = new MatrixCursor(new String[] {"col1", "col2"});
+        queryResult.addRow(new Object[] {"val1", "val2"});
+        ArgumentCaptor<Uri> uriCaptor = ArgumentCaptor.forClass(Uri.class);
+        String[] projection = {"f1", "f2"};
+        String selection = "selection";
+        String[] selectionArgs = {"s1", "s2"};
+        String sortOrder = "so";
+        when(
+                provider1.mock.query(uriCaptor.capture(), eq(projection), eq(selection),
+                        eq(selectionArgs), eq(sortOrder))).thenReturn(queryResult);
+
 
         // The request should be forwarded to TestProvider, which will simply
         // package arguments and return them to us for verification
-        cursor = mResolver.query(contentUri,
-                new String[]{"f1", "f2"}, "query", new String[]{"s1", "s2"}, "so");
+        cursor = mResolver.query(contentUri, projection, selection, selectionArgs, sortOrder);
+        assertEquals(contentUri.getPath(), uriCaptor.getValue().getPath());
         assertNotNull(cursor);
+        assertEquals(Arrays.asList("col1", "col2"), Arrays.asList(cursor.getColumnNames()));
         assertEquals(1, cursor.getCount());
         cursor.moveToFirst();
-        assertEquals("[f1, f2]", cursor.getString(cursor.getColumnIndex("projection")));
-        assertEquals("query", cursor.getString(cursor.getColumnIndex("selection")));
-        assertEquals("[s1, s2]", cursor.getString(cursor.getColumnIndex("selectionArgs")));
-        assertEquals("so", cursor.getString(cursor.getColumnIndex("sortOrder")));
-        assertEquals("account-name1", cursor.getString(cursor.getColumnIndex("accountName")));
-        assertEquals("account-type1", cursor.getString(cursor.getColumnIndex("accountType")));
+        assertEquals("val1", cursor.getString(0));
+        assertEquals("val2", cursor.getString(1));
         cursor.close();
     }
 
     @Test
-    public void testProjectionPopulated() throws Exception {
+    @DisableFlags({Flags.FLAG_DIRECTORY_PROVIDER_QUERY_PERMISSION_CHECK})
+    public void testForwardingToDirectoryProvider_permissionCheckFlagOff_permissionsNotRequired()
+            throws Exception {
         mPackageManager.setInstalledPackages(
                 Lists.newArrayList(createProviderPackage("test.package1", "authority1"),
                         createPackage("test.packageX", "authorityX", false)));
+        mPackageManager.revokeRuntimePermission("test.package1",
+                Manifest.permission.WRITE_CONTACTS);
+        mPackageManager.revokeRuntimePermission("test.package1", Manifest.permission.READ_CALL_LOG);
+
+        MockContactDirectoryProvider provider1 = (MockContactDirectoryProvider) addProvider(
+                MockContactDirectoryProvider.class, "authority1");
+
+        MatrixCursor response1 = provider1.createResponseCursor();
+        addDirectoryRow(response1, "account-name1", "account-type1", "display-name1", 1,
+                Directory.EXPORT_SUPPORT_NONE, Directory.SHORTCUT_SUPPORT_NONE,
+                Directory.PHOTO_SUPPORT_NONE);
+
+        mDirectoryManager.scanAllPackages(/* rescan=*/ false);
+
+        Cursor cursor = mResolver.query(Directory.CONTENT_URI, new String[]{Directory._ID}, null,
+                null, null);
+        cursor.moveToPosition(2);
+        long directoryId = cursor.getLong(0);
+        cursor.close();
+
+        Uri contentUri = ContactsContract.PhoneLookup.CONTENT_FILTER_URI.buildUpon().appendPath(
+                "123").appendQueryParameter(ContactsContract.DIRECTORY_PARAM_KEY,
+                String.valueOf(directoryId)).build();
+
+        mResolver.query(contentUri, null, null, null, null);
+
+        verify(provider1.mock).query(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @EnableFlags({Flags.FLAG_DIRECTORY_PROVIDER_QUERY_PERMISSION_CHECK})
+    public void testForwardingToDirectoryProvider_providerWithoutWriteContacts_doesNotForwardQueries()
+            throws Exception {
+        mPackageManager.setInstalledPackages(
+                Lists.newArrayList(createProviderPackage("test.package1", "authority1"),
+                        createPackage("test.packageX", "authorityX", false)));
+        mPackageManager.revokeRuntimePermission("test.package1",
+                Manifest.permission.WRITE_CONTACTS);
 
         MockContactDirectoryProvider provider1 = (MockContactDirectoryProvider) addProvider(
                 MockContactDirectoryProvider.class, "authority1");
@@ -630,22 +681,139 @@ public class ContactDirectoryManagerTest extends BaseContactsProvider2Test {
         mDirectoryManager.scanAllPackages(/* rescan=*/ false);
 
         Cursor cursor = mResolver.query(
-                Directory.CONTENT_URI, new String[] { Directory._ID }, null, null, null);
+                Directory.CONTENT_URI, new String[]{Directory._ID}, null, null, null);
+        cursor.moveToPosition(2);
+        String directoryId = String.valueOf(cursor.getLong(0));
+        cursor.close();
+
+        Uri phoneLookupUri = ContactsContract.PhoneLookup.CONTENT_FILTER_URI.buildUpon().appendPath(
+                "123").appendQueryParameter(ContactsContract.DIRECTORY_PARAM_KEY,
+                directoryId).build();
+        Uri contactFilterUri = Contacts.CONTENT_FILTER_URI.buildUpon().appendPath(
+                "foo").appendQueryParameter(ContactsContract.DIRECTORY_PARAM_KEY,
+                directoryId).build();
+
+        mResolver.query(phoneLookupUri, null, null, null, null);
+        mResolver.query(contactFilterUri, null, null, null, null);
+
+        verifyNoInteractions(provider1.mock);
+    }
+
+
+    @Test
+    @EnableFlags({Flags.FLAG_DIRECTORY_PROVIDER_QUERY_PERMISSION_CHECK})
+    public void testForwardingToDirectoryProvider_providerWithoutReadCallLog_doesNotForwardPhoneLookup()
+            throws Exception {
+        mPackageManager.setInstalledPackages(
+                Lists.newArrayList(createProviderPackage("test.package1", "authority1"),
+                        createPackage("test.packageX", "authorityX", false)));
+        mPackageManager.grantRuntimePermission("test.package1", Manifest.permission.WRITE_CONTACTS);
+
+        MockContactDirectoryProvider provider1 = (MockContactDirectoryProvider) addProvider(
+                MockContactDirectoryProvider.class, "authority1");
+
+        MatrixCursor response1 = provider1.createResponseCursor();
+        addDirectoryRow(response1, "account-name1", "account-type1", "display-name1", 1,
+                Directory.EXPORT_SUPPORT_NONE, Directory.SHORTCUT_SUPPORT_NONE,
+                Directory.PHOTO_SUPPORT_NONE);
+
+        mDirectoryManager.scanAllPackages(/* rescan=*/ false);
+
+        Cursor cursor = mResolver.query(
+                Directory.CONTENT_URI, new String[]{Directory._ID}, null, null, null);
         cursor.moveToPosition(2);
         long directoryId = cursor.getLong(0);
         cursor.close();
 
-        Uri contentUri = AggregationExceptions.CONTENT_URI.buildUpon().appendQueryParameter(
-                ContactsContract.DIRECTORY_PARAM_KEY, String.valueOf(directoryId)).build();
+        Uri contentUri = ContactsContract.PhoneLookup.CONTENT_FILTER_URI.buildUpon().appendPath(
+                "123").appendQueryParameter(ContactsContract.DIRECTORY_PARAM_KEY,
+                String.valueOf(directoryId)).build();
 
-        // The request should be forwarded to TestProvider, which will return an empty cursor
-        // but the projection should be correctly populated by ContactProvider
-        assertProjection(contentUri, new String[]{
-                AggregationExceptionColumns._ID,
-                AggregationExceptions.TYPE,
-                AggregationExceptions.RAW_CONTACT_ID1,
-                AggregationExceptions.RAW_CONTACT_ID2,
-        });
+        mResolver.query(contentUri, null, null, null, null);
+        verifyNoInteractions(provider1.mock);
+    }
+
+    @Test
+    @EnableFlags({Flags.FLAG_DIRECTORY_PROVIDER_QUERY_PERMISSION_CHECK})
+    public void testForwardingToDirectoryProvider_providerWithCompatChangeNotEnabled_permissionsNotRequired()
+            throws Exception {
+        mPackageManager.setInstalledPackages(
+                Lists.newArrayList(createProviderPackage("test.package1", "authority1"),
+                        createPackage("test.packageX", "authorityX", false)));
+        mPackageManager.revokeRuntimePermission("test.package1",
+                Manifest.permission.WRITE_CONTACTS);
+        mPackageManager.revokeRuntimePermission("test.package1", Manifest.permission.READ_CALL_LOG);
+        mProvider.setCompatChangeEnabledFunction3ForTest(
+                (changeId, packageName, userHandle) ->
+                        changeId != ChangeIds.REQUIRE_PERMISSIONS_FOR_DIRECTORY_QUERIES
+                                || !packageName.equals("test.package1"));
+
+        MockContactDirectoryProvider provider1 = (MockContactDirectoryProvider) addProvider(
+                MockContactDirectoryProvider.class, "authority1");
+
+        MatrixCursor response1 = provider1.createResponseCursor();
+        addDirectoryRow(response1, "account-name1", "account-type1", "display-name1", 1,
+                Directory.EXPORT_SUPPORT_NONE, Directory.SHORTCUT_SUPPORT_NONE,
+                Directory.PHOTO_SUPPORT_NONE);
+
+        mDirectoryManager.scanAllPackages(/* rescan=*/ false);
+
+        Cursor cursor = mResolver.query(
+                Directory.CONTENT_URI, new String[]{Directory._ID}, null, null, null);
+        cursor.moveToPosition(2);
+        long directoryId = cursor.getLong(0);
+        cursor.close();
+
+        Uri contentUri = ContactsContract.PhoneLookup.CONTENT_FILTER_URI.buildUpon().appendPath(
+                "123").appendQueryParameter(ContactsContract.DIRECTORY_PARAM_KEY,
+                String.valueOf(directoryId)).build();
+
+        mResolver.query(contentUri, null, null, null, null);
+        verify(provider1.mock).query(any(), any(), any(), any(), any());
+    }
+
+
+    @Test
+    public void testProjectionPopulated() throws Exception {
+        mPackageManager.setInstalledPackages(
+                Lists.newArrayList(createProviderPackage("test.package1", "authority1"),
+                        createPackage("test.packageX", "authorityX", false)));
+        mPackageManager.grantRuntimePermission("test.package1", Manifest.permission.WRITE_CONTACTS);
+
+        MockContactDirectoryProvider provider1 = (MockContactDirectoryProvider) addProvider(
+                MockContactDirectoryProvider.class, "authority1");
+
+        MatrixCursor response1 = provider1.createResponseCursor();
+        addDirectoryRow(response1, "account-name1", "account-type1", "display-name1", 1,
+                Directory.EXPORT_SUPPORT_NONE, Directory.SHORTCUT_SUPPORT_NONE,
+                Directory.PHOTO_SUPPORT_NONE);
+
+        mDirectoryManager.scanAllPackages(/* rescan=*/ false);
+
+        Cursor cursor = mResolver.query(Directory.CONTENT_URI, new String[]{Directory._ID}, null,
+                null, null);
+        cursor.moveToPosition(2);
+        long directoryId = cursor.getLong(0);
+        cursor.close();
+
+        Uri contentUri = Contacts.CONTENT_URI.buildUpon().appendQueryParameter(
+                ContactsContract.DIRECTORY_PARAM_KEY, String.valueOf(directoryId)).build();
+        ArgumentCaptor<String[]> projectionCaptor = ArgumentCaptor.forClass(String[].class);
+
+        // When querying with a null projection the ContactsProvider will forward the full
+        // projection for the relevant Uri rather than forwarding null.
+        mResolver.query(contentUri, null, null, null, null);
+
+        verify(provider1.mock).query(any(), projectionCaptor.capture(), any(), any(), any());
+        assertNotNull(projectionCaptor.getValue());
+        Set<String> actualProjection = new HashSet<>(Arrays.asList(projectionCaptor.getValue()));
+        assertFalse("Projection projection should not be empty", actualProjection.isEmpty());
+        assertTrue("Projection should include all Contacts columns", actualProjection.containsAll(
+                Arrays.asList(Contacts._ID, Contacts.DISPLAY_NAME,
+                        Contacts.DISPLAY_NAME_ALTERNATIVE, Contacts.PHOTO_URI,
+                        Contacts.CUSTOM_RINGTONE
+                        // And many more but this is enough to validate the behavior.
+                )));
     }
 
     /**

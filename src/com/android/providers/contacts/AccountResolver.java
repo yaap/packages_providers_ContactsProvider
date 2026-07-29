@@ -19,7 +19,6 @@ import android.accounts.Account;
 import android.accounts.AccountManager;
 import android.content.ContentValues;
 import android.net.Uri;
-import android.provider.ContactsContract.RawContacts;
 import android.provider.ContactsContract.RawContacts.DefaultAccount.DefaultAccountAndState;
 import android.provider.ContactsContract.SimAccount;
 import android.text.TextUtils;
@@ -43,53 +42,6 @@ public class AccountResolver {
         mDbHelper = dbHelper;
         mDefaultAccountManager = defaultAccountManager;
         mAccountManager = accountManager;
-    }
-
-    private static Account getLocalAccount() {
-        if (TextUtils.isEmpty(AccountWithDataSet.LOCAL.getAccountName())) {
-            // AccountWithDataSet.LOCAL's getAccountType() must be null as well, thus we return
-            // the NULL account.
-            return null;
-        } else {
-            // AccountWithDataSet.LOCAL's getAccountType() must not be null as well, thus we return
-            // the customized local account.
-            return new Account(AccountWithDataSet.LOCAL.getAccountName(),
-                    AccountWithDataSet.LOCAL.getAccountType());
-        }
-    }
-
-    /**
-     * Resolves the account and builds an {@link AccountWithDataSet} based on the data set specified
-     * in the URI or values (if any).
-     *
-     * @param uri                                     Current {@link Uri} being operated on.
-     * @param values                                  {@link ContentValues} to read and possibly
-     *                                                update.
-     * @param applyDefaultAccount                     Whether to look up default account during
-     *                                                account resolution.
-     * @param shouldValidateAccountForContactAddition Whether to validate the account accepts new
-     *                                                contacts.
-     */
-    public AccountWithDataSet resolveAccountWithDataSet(Uri uri, ContentValues values,
-            boolean applyDefaultAccount, boolean shouldValidateAccountForContactAddition,
-            boolean allowSimWriteOnCloudDcaBypassEnabled) {
-        final Account[] accounts = resolveAccount(uri, values);
-        final Account account = applyDefaultAccount ? getAccountWithDefaultAccountApplied(accounts,
-                shouldValidateAccountForContactAddition, allowSimWriteOnCloudDcaBypassEnabled)
-                : getFirstAccountOrNull(accounts);
-
-        AccountWithDataSet accountWithDataSet = null;
-        if (account != null) {
-            String dataSet = ContactsProvider2.getQueryParameter(uri, RawContacts.DATA_SET);
-            if (dataSet == null) {
-                dataSet = values.getAsString(RawContacts.DATA_SET);
-            } else {
-                values.put(RawContacts.DATA_SET, dataSet);
-            }
-            accountWithDataSet = AccountWithDataSet.get(account.name, account.type, dataSet);
-        }
-
-        return accountWithDataSet;
     }
 
     /**
@@ -213,37 +165,6 @@ public class AccountResolver {
         return validator.getValidationResult(accountName, accountType, dataSet);
     }
 
-
-    /**
-     * Resolves the account to be used, taking into consideration the default account settings.
-     *
-     * @param accounts 1-size array which contains specified account, or empty array if account is
-     *                 not specified.
-     * @return The resolved account, or null if it's the default device (aka "NULL") account.
-     * @throws IllegalArgumentException If there's an issue with the account resolution due to
-     *                                  default account incompatible account types.
-     */
-    private Account getAccountWithDefaultAccountApplied(Account[] accounts,
-            boolean shouldValidateAccountForContactAddition,
-            boolean allowSimWriteOnCloudDcaBypassEnabled) throws IllegalArgumentException {
-        if (accounts.length == 0) {
-            DefaultAccountAndState defaultAccountAndState =
-                    mDefaultAccountManager.pullDefaultAccount();
-            if (defaultAccountAndState.getState()
-                    == DefaultAccountAndState.DEFAULT_ACCOUNT_STATE_NOT_SET
-                    || defaultAccountAndState.getState()
-                    == DefaultAccountAndState.DEFAULT_ACCOUNT_STATE_LOCAL) {
-                return getLocalAccount();
-            } else {
-                return defaultAccountAndState.getAccount();
-            }
-        } else {
-            validateAccountForContactAdditionInternal(accounts[0],
-                    shouldValidateAccountForContactAddition, allowSimWriteOnCloudDcaBypassEnabled);
-            return accounts[0];
-        }
-    }
-
     /**
      * Checks if new contacts in specified account is accepted.
      *
@@ -303,17 +224,6 @@ public class AccountResolver {
         }
     }
 
-    /**
-     * Gets the first account from the array, or null if the array is empty.
-     *
-     * @param accounts The array of accounts.
-     * @return The first account, or null if the array is empty.
-     */
-    private Account getFirstAccountOrNull(Account[] accounts) {
-        return accounts.length > 0 ? accounts[0] : null;
-    }
-
-
     private boolean isDeviceOrSimAccount(Account account) {
         AccountWithDataSet accountWithDataSet = account == null ? new AccountWithDataSet(null, null,
                 null) : new AccountWithDataSet(account.name, account.type, null);
@@ -327,74 +237,5 @@ public class AccountResolver {
                 null) : new AccountWithDataSet(account.name, account.type, null);
 
         return accountWithDataSet.isLocalAccount();
-    }
-
-    /**
-     * If account is non-null then store it in the values. If the account is
-     * already specified in the values then it must be consistent with the
-     * account, if it is non-null.
-     *
-     * @param uri    Current {@link Uri} being operated on.
-     * @param values {@link ContentValues} to read and possibly update.
-     * @return 1-size array which contains account specified by {@link Uri} and
-     * {@link ContentValues}, or empty array if account is not specified.
-     * @throws IllegalArgumentException when only one of
-     *                                  {@link RawContacts#ACCOUNT_NAME} or
-     *                                  {@link RawContacts#ACCOUNT_TYPE} is specified, leaving the
-     *                                  other undefined.
-     * @throws IllegalArgumentException when {@link RawContacts#ACCOUNT_NAME}
-     *                                  and {@link RawContacts#ACCOUNT_TYPE} are inconsistent
-     *                                  between
-     *                                  the given {@link Uri} and {@link ContentValues}.
-     */
-    private Account[] resolveAccount(Uri uri, ContentValues values)
-            throws IllegalArgumentException {
-        String accountName = ContactsProvider2.getQueryParameter(uri, RawContacts.ACCOUNT_NAME);
-        String accountType = ContactsProvider2.getQueryParameter(uri, RawContacts.ACCOUNT_TYPE);
-        final boolean partialUri = TextUtils.isEmpty(accountName) ^ TextUtils.isEmpty(accountType);
-
-        if (accountName == null && accountType == null && !values.containsKey(
-                RawContacts.ACCOUNT_NAME) && !values.containsKey(RawContacts.ACCOUNT_TYPE)) {
-            // Account is not specified.
-            return new Account[0];
-        }
-
-        String valueAccountName = values.getAsString(RawContacts.ACCOUNT_NAME);
-        String valueAccountType = values.getAsString(RawContacts.ACCOUNT_TYPE);
-
-        final boolean partialValues = TextUtils.isEmpty(valueAccountName) ^ TextUtils.isEmpty(
-                valueAccountType);
-
-        if (partialUri || partialValues) {
-            // Throw when either account is incomplete.
-            throw new IllegalArgumentException(mDbHelper.exceptionMessage(
-                    "Must specify both or neither of ACCOUNT_NAME and ACCOUNT_TYPE", uri));
-        }
-
-        // Accounts are valid by only checking one parameter, since we've
-        // already ruled out partial accounts.
-        final boolean validUri = !TextUtils.isEmpty(accountName);
-        final boolean validValues = !TextUtils.isEmpty(valueAccountName);
-
-        if (validValues && validUri) {
-            // Check that accounts match when both present
-            final boolean accountMatch = TextUtils.equals(accountName, valueAccountName)
-                    && TextUtils.equals(accountType, valueAccountType);
-            if (!accountMatch) {
-                throw new IllegalArgumentException(mDbHelper.exceptionMessage(
-                        "When both specified, ACCOUNT_NAME and ACCOUNT_TYPE must match", uri));
-            }
-        } else if (validUri) {
-            // Fill values from the URI when not present.
-            values.put(RawContacts.ACCOUNT_NAME, accountName);
-            values.put(RawContacts.ACCOUNT_TYPE, accountType);
-        } else if (validValues) {
-            accountName = valueAccountName;
-            accountType = valueAccountType;
-        } else {
-            return new Account[]{null};
-        }
-
-        return new Account[]{new Account(accountName, accountType)};
     }
 }

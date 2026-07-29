@@ -28,8 +28,12 @@ import android.os.UserHandle;
 import android.test.mock.MockPackageManager;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Mock {@link PackageManager} that knows about a specific set of packages
@@ -44,6 +48,7 @@ public class ContactsMockPackageManager extends MockPackageManager {
     private final HashMap<Integer, String> mForward = new HashMap<Integer, String>();
     private final HashMap<String, Integer> mReverse = new HashMap<String, Integer>();
     private List<PackageInfo> mPackages;
+    private Map<String, Set<String>> mGrantedPermissionsByPackageName = new HashMap<>();
 
     public ContactsMockPackageManager(Context realContext) {
         mRealContext = realContext;
@@ -62,6 +67,18 @@ public class ContactsMockPackageManager extends MockPackageManager {
         if (packageName != null) {
             mReverse.remove(packageName);
         }
+    }
+
+    /** Fake that the given permission is granted to the given package. */
+    public void grantRuntimePermission(String packageName, String permission) {
+        mGrantedPermissionsByPackageName.computeIfAbsent(packageName,
+                (k) -> new HashSet<>()).add(permission);
+    }
+
+    /** Fake that the given permission is not granted to the given package. */
+    public void revokeRuntimePermission(String packageName, String permission) {
+        mGrantedPermissionsByPackageName.computeIfAbsent(packageName,
+                (k) -> new HashSet<>()).remove(permission);
     }
 
     @Override
@@ -154,6 +171,13 @@ public class ContactsMockPackageManager extends MockPackageManager {
             }
         }
         return ret;
+    }
+
+    @Override
+    public int checkPermission(String permission, String packageName) {
+        return mGrantedPermissionsByPackageName.getOrDefault(packageName,
+                Collections.emptySet()).contains(permission) ? PERMISSION_GRANTED
+                : PERMISSION_DENIED;
     }
 
     @Override

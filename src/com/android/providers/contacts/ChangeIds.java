@@ -41,4 +41,20 @@ public class ChangeIds {
     @ChangeId
     @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.BAKLAVA)
     public static final long RESTRICT_DATA_URI_COLUMNS = 437318646L;
+
+    /**
+     * Requires apps with a directory provider to hold WRITE_CONTACTS in order to handle queries
+     * and to also hold READ_CALL_LOG in order to handle phone lookups queries.
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.BAKLAVA)
+    public static final long REQUIRE_PERMISSIONS_FOR_DIRECTORY_QUERIES = 157720069L;
+
+    /**
+     * Enforces strict sql checks for callers accessing `com.android.contacts/data` uris without
+     * READ_CONTACTS permission, starting after {@link android.os.Build.VERSION_CODES#BAKLAVA}.
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.BAKLAVA)
+    public static final long ENFORCE_STRICT_SQL_CHECKS = 484953293L;
 }

@@ -62,12 +62,6 @@ flag {
    }
 }
 flag {
-   name: "insert_account_logging"
-   namespace: "contacts"
-   description: "Enables logging of account metadata for raw contact and group inserts"
-   bug: "427735757"
-}
-flag {
    name: "restrict_pii_data_uri_columns"
    namespace: "profile_experiences"
    description: "Restricts PII columns from data view of CP2"
@@ -81,4 +75,31 @@ flag {
    namespace: "contacts"
    description: "Enables default account eligibility dynamically determined by account attributes"
    bug: "438754194"
+}
+flag {
+   name: "directory_provider_query_permission_check"
+   namespace: "contacts"
+   description: "Enables READ_CALL_LOG and WRITE_CONTACTS permissions checks for directory provider queries."
+   bug: "157720069"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+flag {
+   name: "enforce_strict_sql_checks"
+   namespace: "profile_experiences"
+   description: "Enforces strict sql checks for callers without READ_CONTACTS permission"
+   bug: "484953293"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+flag {
+    name: "enable_people_provider"
+    namespace: "contacts"
+    description: "Enables PeopleProvider so that it responds to queries"
+    bug: "461859503"
+    metadata {
+       purpose: PURPOSE_FEATURE
+   }
 }

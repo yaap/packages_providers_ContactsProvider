@@ -19,6 +19,7 @@ package com.android.providers.contacts;
 import static com.android.providers.contacts.TestUtils.cv;
 import static com.android.providers.contacts.TestUtils.dumpCursor;
 
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.when;
 
@@ -53,6 +54,7 @@ import android.provider.ContactsContract.CommonDataKinds.Contactables;
 import android.provider.ContactsContract.CommonDataKinds.Email;
 import android.provider.ContactsContract.CommonDataKinds.GroupMembership;
 import android.provider.ContactsContract.CommonDataKinds.Im;
+import android.provider.ContactsContract.CommonDataKinds.Note;
 import android.provider.ContactsContract.CommonDataKinds.Organization;
 import android.provider.ContactsContract.CommonDataKinds.Phone;
 import android.provider.ContactsContract.CommonDataKinds.Photo;
@@ -113,6 +115,7 @@ import com.android.providers.contacts.testutil.DeletedContactUtil;
 import com.android.providers.contacts.testutil.RawContactUtil;
 import com.android.providers.contacts.testutil.TestUtil;
 import com.android.providers.contacts.util.NullContentProvider;
+import com.android.providers.contacts.util.PccUtils;
 import com.android.providers.contacts.util.PhoneAccountHandleMigrationUtils;
 import com.android.providers.contacts.util.UserUtils;
 
@@ -125,6 +128,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -168,11 +172,11 @@ public class ContactsProvider2Test extends BaseContactsProvider2Test {
 
     private int mOldMinMatch1;
     private int mOldMinMatch2;
-
-    ContactsDatabaseHelper mMockContactsDatabaseHelper;
     private ContactsProvider2 mContactsProvider2;
     private ContactsDatabaseHelper mDbHelper;
     private BroadcastReceiver mBroadcastReceiver;
+
+    @Mock private ContactsProvider2.PccUidChecker mMockPccUidChecker;
 
     @Before
     @Override
@@ -186,6 +190,7 @@ public class ContactsProvider2Test extends BaseContactsProvider2Test {
         PhoneNumberUtils.setMinMatchForTest(MIN_MATCH);
         mDbHelper.setMinMatchForTest(MIN_MATCH);
         assertNotNull(mDbHelper);
+        mContactsProvider2.setPccUidCheckerForTest(mMockPccUidChecker);
     }
 
     @After
@@ -271,9 +276,24 @@ public class ContactsProvider2Test extends BaseContactsProvider2Test {
                 = mContactsProvider2.getContactsDatabaseHelperForTest();
 
         // Mock SubscriptionManager
-        SubscriptionInfo subscriptionInfo = new SubscriptionInfo(
-                TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT, TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1,
-                        1, "a", "b", 1, 1, "test", 1, null, null, null, null, false, null, null);
+        SubscriptionInfo subscriptionInfo = new SubscriptionInfo.Builder()
+                .setId(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT)
+                .setIccId(TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1)
+                .setSimSlotIndex(1)
+                .setDisplayName("a")
+                .setCarrierName("b")
+                .setDisplayNameSource(1)
+                .setIconTint(1)
+                .setNumber("test")
+                .setDataRoaming(1)
+                .setIcon(null)
+                .setMcc(null)
+                .setMnc(null)
+                .setCountryIso(null)
+                .setEmbedded(false)
+                .setNativeAccessRules(null)
+                .setCardString(null)
+                .build();
         when(mSubscriptionManager.getActiveSubscriptionInfo(
                 eq(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT))).thenReturn(subscriptionInfo);
 
@@ -331,9 +351,24 @@ public class ContactsProvider2Test extends BaseContactsProvider2Test {
                 = mContactsProvider2.getContactsDatabaseHelperForTest();
 
         // Mock SubscriptionManager
-        SubscriptionInfo subscriptionInfo = new SubscriptionInfo(
-                TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT, TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1,
-                        1, "a", "b", 1, 1, "test", 1, null, null, null, null, false, null, null);
+        SubscriptionInfo subscriptionInfo = new SubscriptionInfo.Builder()
+                .setId(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT)
+                .setIccId(TEST_PHONE_ACCOUNT_HANDLE_ICC_ID1)
+                .setSimSlotIndex(1)
+                .setDisplayName("a")
+                .setCarrierName("b")
+                .setDisplayNameSource(1)
+                .setIconTint(1)
+                .setNumber("test")
+                .setDataRoaming(1)
+                .setIcon(null)
+                .setMcc(null)
+                .setMnc(null)
+                .setCountryIso(null)
+                .setEmbedded(false)
+                .setNativeAccessRules(null)
+                .setCardString(null)
+                .build();
         List<SubscriptionInfo> subscriptionInfoList = new ArrayList<>();
         subscriptionInfoList.add(subscriptionInfo);
         when(mSubscriptionManager.getAllSubscriptionInfoList()).thenReturn(subscriptionInfoList);
@@ -1573,6 +1608,60 @@ public class ContactsProvider2Test extends BaseContactsProvider2Test {
         Uri contactDataUri = Uri.withAppendedPath(contactUri, Contacts.Data.CONTENT_DIRECTORY);
         assertSelection(contactDataUri, values, Data._ID, dataId);
         assertNetworkNotified(true);
+    }
+
+    @Test
+    public void testUpdateFailsWithOnlyCaseMismatchedColumn() {
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+        Uri nameUri = DataUtil.insertStructuredName(mResolver, rawContactId, "Jane", "Smith");
+
+        ContentValues values = new ContentValues();
+        values.put("daTa1", "New Display Name"); // "data1" is the correct case but we used "daTa1"
+        int updateCount = mResolver.update(nameUri, values, null, null);
+
+        // Verify the update was rejected.
+        assertEquals(0, updateCount);
+        assertStoredValue(nameUri, Data.DATA1, "Jane Smith");
+    }
+
+    @Test
+    public void testUpdateSucceedsWithAtLeastOneCaseSensitiveColumn() {
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+        Uri nameUri = DataUtil.insertStructuredName(mResolver, rawContactId, "Jane", "Smith");
+
+        ContentValues values = new ContentValues();
+        values.put("daTa1", "New Display Name"); // Mismatched case
+        values.put("data14", "Some Data");      // Exact case match
+        int updateCount = mResolver.update(nameUri, values, null, null);
+
+        assertEquals(1, updateCount);
+        // Verify both values were updated, including the one with the case-mismatched key.
+        assertStoredValue(nameUri, Data.DATA1, "New Display Name");
+        assertStoredValue(nameUri, Data.DATA14, "Some Data");
+    }
+
+
+    @Test
+    public void testCaseMismatchingFieldUpdatesAreTruncatedToMaxSize() {
+        int maxSize = ContactsDatabaseHelper.getSimpleFieldMaxSize();
+        String tooLong = "D".repeat(maxSize + 100);
+        String expectedTruncated = tooLong.substring(0, maxSize);
+
+        String[] columnVariants = new String[] { "data1", "daTa1", "DATA1", "Data1" };
+
+        for (String column : columnVariants) {
+            long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+            Uri nameUri = DataUtil.insertStructuredName(mResolver, rawContactId, "Jane", "Smith");
+
+            ContentValues values = new ContentValues();
+            values.put(column, tooLong);
+            // At least one case sensitive column match is required for successful update
+            values.put("data14", "Sample Data");
+            mResolver.update(nameUri, values, null, null);
+
+            // Verify data1 was updated and truncated to maxSize
+            assertStoredValue(nameUri, Data.DATA1, expectedTruncated);
+        }
     }
 
     @Test
@@ -10329,6 +10418,288 @@ public class ContactsProvider2Test extends BaseContactsProvider2Test {
         testAuthorization_invalidAuthorization();
     }
 
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataUri_SingleMimetype_OR() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+        long contactId1 = createContactWithData("Mime TestA",
+                new String[]{Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE});
+        long contactId2 = createContactWithData("Mime TestB",
+                new String[]{Email.CONTENT_ITEM_TYPE});
+
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                        "mimes")
+                .appendQueryParameter("requested_mimetypes", Phone.CONTENT_ITEM_TYPE)
+                .build();
+        Cursor cursor = mResolver.query(uri, new String[]{Contacts._ID}, null, null, null);
+        assertEquals(1, cursor.getCount());
+        cursor.moveToFirst();
+        assertEquals(contactId1, cursor.getLong(0));
+        assertNotSame(contactId2, cursor.getLong(0));
+        cursor.close();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataUri_MultiMimetype_OR() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+        long contactId1 = createContactWithData("Mime OR1", new String[]{Phone.CONTENT_ITEM_TYPE});
+        long contactId2 = createContactWithData("Mime OR2", new String[]{Email.CONTENT_ITEM_TYPE});
+        long contactId3 = createContactWithData("Mime OR3",
+                new String[]{StructuredPostal.CONTENT_ITEM_TYPE});
+        long contactId4 = createContactWithData("Mime OR4",
+                new String[]{Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE});
+
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                        "mimes")
+                .appendQueryParameter("requested_mimetypes",
+                        Phone.CONTENT_ITEM_TYPE + "," + Email.CONTENT_ITEM_TYPE)
+                .build();
+        Cursor cursor = mResolver.query(uri, new String[]{Contacts._ID}, null, null, Contacts._ID);
+        assertEquals(3, cursor.getCount());
+        Set<Long> ids = new HashSet<>();
+        while (cursor.moveToNext()) {
+            ids.add(cursor.getLong(0));
+        }
+        assertTrue(ids.contains(contactId1));
+        assertTrue(ids.contains(contactId2));
+        assertTrue(ids.contains(contactId4));
+        assertFalse(ids.contains(contactId3));
+        cursor.close();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataUri_MultiMimetype_AND() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+        long contactId1 = createContactWithData("Mime AND1",
+                new String[]{Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE,
+                        StructuredPostal.CONTENT_ITEM_TYPE});
+        long contactId2 = createContactWithData("Mime AND2",
+                new String[]{Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE});
+        long contactId3 = createContactWithData("Mime AND3", new String[]{Email.CONTENT_ITEM_TYPE});
+
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                        "mimes")
+                .appendQueryParameter("requested_mimetypes",
+                        Phone.CONTENT_ITEM_TYPE + "," + Email.CONTENT_ITEM_TYPE)
+                .appendQueryParameter("match_all_mimetypes", "true")
+                .build();
+        Cursor cursor = mResolver.query(uri, new String[]{Contacts._ID}, null, null, Contacts._ID);
+        assertEquals(2, cursor.getCount());
+        Set<Long> ids = new HashSet<>();
+        while (cursor.moveToNext()) {
+            ids.add(cursor.getLong(0));
+        }
+        assertTrue(ids.contains(contactId1));
+        assertTrue(ids.contains(contactId2));
+        assertFalse(ids.contains(contactId3));
+        cursor.close();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataUri_NoMatch_OR() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+        createContactWithData("Mime NoMatchOR", new String[]{StructuredPostal.CONTENT_ITEM_TYPE});
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                        "mimes")
+                .appendQueryParameter("requested_mimetypes",
+                        Phone.CONTENT_ITEM_TYPE + "," + Email.CONTENT_ITEM_TYPE)
+                .build();
+        Cursor cursor = mResolver.query(uri, new String[]{Contacts._ID}, null, null, null);
+        assertEquals(0, cursor.getCount());
+        cursor.close();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataUri_NoMatch_AND() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+        createContactWithData("Mime NoMatchAND", new String[]{Phone.CONTENT_ITEM_TYPE});
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                        "mimes")
+                .appendQueryParameter("requested_mimetypes",
+                        Phone.CONTENT_ITEM_TYPE + "," + Email.CONTENT_ITEM_TYPE)
+                .appendQueryParameter("match_all_mimetypes", "true")
+                .build();
+        Cursor cursor = mResolver.query(uri, new String[]{Contacts._ID}, null, null, null);
+        assertEquals(0, cursor.getCount());
+        cursor.close();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataFilterUri_SingleMimetype_OR() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+        long contactId1 = createContactWithData("Filter TestA",
+                new String[]{Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE});
+        createContactWithData("Filter TestB", new String[]{Email.CONTENT_ITEM_TYPE});
+
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                        "mimes").appendPath(
+                        "filter").appendPath("TestA")
+                .appendQueryParameter("requested_mimetypes", Phone.CONTENT_ITEM_TYPE)
+                .build();
+        Cursor cursor = mResolver.query(uri, new String[]{Contacts._ID}, null, null, null);
+        assertEquals(1, cursor.getCount());
+        cursor.moveToFirst();
+        assertEquals(contactId1, cursor.getLong(0));
+        cursor.close();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataFilterUri_MultiMimetype_AND() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+        long contactId1 = createContactWithData("Filter AND1",
+                new String[]{Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE});
+        createContactWithData("Filter AND2", new String[]{Phone.CONTENT_ITEM_TYPE});
+        createContactWithData("Something Else",
+                new String[]{Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE});
+
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                        "mimes").appendPath(
+                        "filter").appendPath("Filter")
+                .appendQueryParameter("requested_mimetypes",
+                        Phone.CONTENT_ITEM_TYPE + "," + Email.CONTENT_ITEM_TYPE)
+                .appendQueryParameter("match_all_mimetypes", "true")
+                .build();
+        Cursor cursor = mResolver.query(uri, new String[]{Contacts._ID}, null, null, null);
+        assertEquals(1, cursor.getCount());
+        cursor.moveToFirst();
+        assertEquals(contactId1, cursor.getLong(0));
+        cursor.close();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataUri_noPermission_SecurityException() {
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                "mimes").build();
+        try {
+            mResolver.query(uri, new String[]{Contacts._ID}, null, null, null);
+            fail("Expected SecurityException when querying without MANAGE_CONTACTS_PICKER_SESSION");
+        } catch (SecurityException e) {
+            // Expected behavior
+        }
+    }
+
+    @Test
+    @RequiresFlagsDisabled(android.content.flags.Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    public void testContactsWithDataUri_flagDisabled_UnsupportedOperationException() {
+        mActor.addPermissions("android.permission.MANAGE_CONTACTS_PICKER_SESSION");
+
+        Uri uri = ContactsContract.AUTHORITY_URI.buildUpon().appendPath("contacts").appendPath(
+                "mimes").build();
+        try {
+            mResolver.query(uri, new String[]{Contacts._ID}, null, null, null);
+            fail("Expected UnsupportedOperationException when flag is disabled");
+        } catch (UnsupportedOperationException e) {
+            // Expected behavior
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testValidateDataWriteForPcc_noteMimeType_throwsSecurityException() {
+        String mimeType = Note.CONTENT_ITEM_TYPE;
+        Assert.assertThrows(
+                SecurityException.class,
+                () -> {
+                    PccUtils.validateDataWriteForPcc(mimeType);
+                });
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testInsertData_pccUid_noteMimeType_throwsSecurityException() {
+        when(mMockPccUidChecker.isPrivateComputeCoreUid(anyInt())).thenReturn(true);
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+
+        ContentValues noteValues = new ContentValues();
+        noteValues.put(Data.RAW_CONTACT_ID, rawContactId);
+        noteValues.put(Data.MIMETYPE, Note.CONTENT_ITEM_TYPE);
+        noteValues.put(Note.NOTE, "test note");
+
+        Assert.assertThrows(
+                SecurityException.class, () -> mResolver.insert(Data.CONTENT_URI, noteValues));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testInsertData_pccUid_allowlistedMimeType_succeeds() {
+        when(mMockPccUidChecker.isPrivateComputeCoreUid(anyInt())).thenReturn(true);
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+
+        ContentValues emailValues = new ContentValues();
+        emailValues.put(Data.RAW_CONTACT_ID, rawContactId);
+        emailValues.put(Data.MIMETYPE, Email.CONTENT_ITEM_TYPE);
+        emailValues.put(Email.ADDRESS, "pcc@example.com");
+
+        Uri resultUri = mResolver.insert(Data.CONTENT_URI, emailValues);
+        Assert.assertNotNull(resultUri);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testInsertData_pccUid_customMimeType_succeeds() {
+        when(mMockPccUidChecker.isPrivateComputeCoreUid(anyInt())).thenReturn(true);
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+
+        String nonAllowlistedMimeType = "vnd.android.cursor.item/com.example.custom.data";
+        ContentValues customValues = new ContentValues();
+        customValues.put(Data.RAW_CONTACT_ID, rawContactId);
+        customValues.put(Data.MIMETYPE, nonAllowlistedMimeType);
+        customValues.put(Data.DATA1, "Custom PCC Data");
+
+        Uri resultUri = mResolver.insert(Data.CONTENT_URI, customValues);
+        Assert.assertNotNull(resultUri);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testUpdateData_pccUid_noteMimeType_throwsSecurityException() {
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+
+        when(mMockPccUidChecker.isPrivateComputeCoreUid(anyInt())).thenReturn(false);
+        ContentValues noteValues = new ContentValues();
+        noteValues.put(Data.RAW_CONTACT_ID, rawContactId);
+        noteValues.put(Data.MIMETYPE, Note.CONTENT_ITEM_TYPE);
+        noteValues.put(Note.NOTE, "Initial note");
+        Uri insertedNoteUri = mResolver.insert(Data.CONTENT_URI, noteValues);
+        Assert.assertNotNull(insertedNoteUri);
+
+        // Simulate a PCC UID trying to update the Note
+        when(mMockPccUidChecker.isPrivateComputeCoreUid(anyInt())).thenReturn(true);
+        ContentValues updateValues = new ContentValues();
+        updateValues.put(Note.NOTE, "Updated note by PCC");
+
+        Assert.assertThrows(
+                SecurityException.class,
+                () -> mResolver.update(insertedNoteUri, updateValues, null, null));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testUpdateData_pccUid_allowlistedMimeType_succeeds() {
+        when(mMockPccUidChecker.isPrivateComputeCoreUid(anyInt())).thenReturn(true);
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, "John", "Doe");
+
+        ContentValues emailValues = new ContentValues();
+        emailValues.put(Data.RAW_CONTACT_ID, rawContactId);
+        emailValues.put(Data.MIMETYPE, Email.CONTENT_ITEM_TYPE);
+        emailValues.put(Email.ADDRESS, "pcc@example.com");
+        Uri insertedEmailUri = mResolver.insert(Data.CONTENT_URI, emailValues);
+        Assert.assertNotNull(insertedEmailUri);
+
+        // Update the Email
+        ContentValues updateValues = new ContentValues();
+        updateValues.put(Email.ADDRESS, "updated_pcc@example.com");
+        int count = mResolver.update(insertedEmailUri, updateValues, null, null);
+        Assert.assertEquals(1, count);
+    }
+
     private Uri getPreAuthorizedUri(Uri uri) {
         final Bundle uriBundle = new Bundle();
         uriBundle.putParcelable(ContactsContract.Authorization.KEY_URI_TO_AUTHORIZE, uri);
@@ -10552,5 +10923,24 @@ public class ContactsProvider2Test extends BaseContactsProvider2Test {
             }
         }
         return false;
+
+    }
+
+    private long createContactWithData(String displayName, String[] mimetypes) {
+        long rawContactId = RawContactUtil.createRawContactWithName(mResolver, displayName, null);
+        for (String mimetype : mimetypes) {
+            ContentValues values = new ContentValues();
+            values.put(Data.RAW_CONTACT_ID, rawContactId);
+            values.put(Data.MIMETYPE, mimetype);
+            switch (mimetype) {
+                case Phone.CONTENT_ITEM_TYPE -> values.put(Phone.NUMBER, "1234567890");
+                case Email.CONTENT_ITEM_TYPE -> values.put(Email.ADDRESS, "test@example.com");
+                case StructuredPostal.CONTENT_ITEM_TYPE ->
+                        values.put(StructuredPostal.FORMATTED_ADDRESS, "123 Main St");
+                default -> { }
+            }
+            mResolver.insert(Data.CONTENT_URI, values);
+        }
+        return queryContactId(rawContactId);
     }
 }

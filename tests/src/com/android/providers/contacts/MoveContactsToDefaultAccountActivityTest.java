@@ -39,7 +39,6 @@ import android.database.Cursor;
 import android.icu.text.MessageFormat;
 import android.net.Uri;
 import android.os.Bundle;
-import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.RequiresFlagsDisabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
@@ -121,7 +120,6 @@ public class MoveContactsToDefaultAccountActivityTest {
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_NEW_DEFAULT_ACCOUNT_API_ENABLED)
     public void testMoveLocalContactsDialog_eligibleAccount_clickConfirm() throws Exception {
         MockContentProvider mockContentProvider = setupMockContentProvider(
                 DefaultAccountAndState.ofCloud(TEST_ACCOUNT), 1, 1);
@@ -157,7 +155,6 @@ public class MoveContactsToDefaultAccountActivityTest {
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_NEW_DEFAULT_ACCOUNT_API_ENABLED)
     public void testMoveLocalContactsDialog_eligibleAccount_clickCancel() {
         MockContentProvider mockContentProvider = setupMockContentProvider(
                 DefaultAccountAndState.ofCloud(TEST_ACCOUNT), 1, 0);
@@ -191,7 +188,6 @@ public class MoveContactsToDefaultAccountActivityTest {
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_NEW_DEFAULT_ACCOUNT_API_ENABLED)
     public void testMoveLocalContactsDialog_noDefaultAccount_dontShowDialog() {
         MockContentProvider mockContentProvider = setupMockContentProvider(
                 DefaultAccountAndState.ofNotSet(), 1, 1);
@@ -216,7 +212,6 @@ public class MoveContactsToDefaultAccountActivityTest {
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_NEW_DEFAULT_ACCOUNT_API_ENABLED)
     public void testMoveLocalContactsDialog_noCloudAccount_dontShowDialog() {
         MockContentProvider mockContentProvider = setupMockContentProvider(
                 DefaultAccountAndState.ofLocal(), 1, 1);
@@ -263,7 +258,6 @@ public class MoveContactsToDefaultAccountActivityTest {
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_NEW_DEFAULT_ACCOUNT_API_ENABLED)
     public void testMoveLocalContactsDialog_noMovableContacts_dontShowDialog() {
         MockContentProvider mockContentProvider = setupMockContentProvider(
                 DefaultAccountAndState.ofCloud(TEST_ACCOUNT), 0, 0);
